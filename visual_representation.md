@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-08, trace logging; trace format defined in tracer.py (on top of commit `ee14bb1`)
+**Last updated:** 2026-10-20, provenance in every trace (on top of commit `21984a1`)
 
 ---
 
@@ -200,10 +200,19 @@ run_end         outcome=answered  steps=3  13.0s
 
 | Event | When | Key fields |
 |---|---|---|
-| `run_start` | once, first | task, full config (incl. system prompt), tool schemas, approver |
-| `model_response` | every model call | message, **reasoning** (dropped from history, kept here), finish_reason, usage (tokens, cache, oMLX timings), seconds |
+| `run_start` | once, first | task, full config (incl. system prompt), tool schemas, approver, **provenance** (below) |
+| `model_response` | every model call | message, **reasoning** (dropped from history, kept here), finish_reason, model (as reported by the server), usage (tokens, cache, oMLX timings), seconds |
 | `tool_call` | every tool call | id, name, **raw** arguments string, result, seconds |
 | `run_end` | once, last | outcome: `answered` / `max_steps` / `crashed` / `interrupted`; answer or error; steps; seconds |
+
+**Provenance**: what produced a run, so runs can be filtered later (evals, fine-tuning data).
+A hash *identifies* content; it doesn't store it.
+
+| Field | Meaning | Recoverable? |
+|---|---|---|
+| `agent_version` | 12-char hash of the agent definition (name excluded): same content, same version | Yes: the full definition is in `run_start.config` |
+| `harness.commit` / `harness.dirty` | git commit of the harness code; whether there were uncommitted changes | Via `git checkout`, only if `dirty` is false |
+| `model_requested` (+ `model` per response) | the model asked for, and the one the server says answered | Only if the same weights still exist |
 
 ---
 
@@ -220,6 +229,7 @@ flowchart TD
     orch --> tools_api["tools/__init__.py<br/>public API"]
     orch --> tracer["tracer.py<br/>JSONL events"]
     agent --> tracer
+    tracer --> prov["provenance.py<br/>agent hash, git state"]
     agent --> tools_api
     tools_api --> toolset["tools/toolset.py<br/>REGISTRY + Toolset"]
     toolset --> policy

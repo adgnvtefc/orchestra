@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from harness import provenance
+
 if TYPE_CHECKING:  # only for type hints; never imported at runtime
     from openai.types.chat import ChatCompletion, ChatCompletionMessageToolCall
 
@@ -60,9 +62,16 @@ class Tracer:
     # ---- The trace format: one method per kind of event ----
 
     def start(self, task: str, config: dict, tools: list[dict], approver: str) -> None:
-        """run_start: everything needed to know what this run was set up to do."""
+        """run_start: everything needed to know what this run was set up to do, and what produced it."""
         self._started = time.monotonic()
-        self.event("run_start", task=task, config=config, tools=tools, approver=approver)
+        self.event(
+            "run_start",
+            task=task,
+            config=config,
+            tools=tools,
+            approver=approver,
+            provenance=provenance.collect(config),
+        )
 
     def model_response(self, step: int, response: "ChatCompletion", seconds: float) -> None:
         self.steps = step
@@ -76,6 +85,7 @@ class Tracer:
             # dropped from the conversation history, but kept here: it's *why* the model did what it did
             reasoning=getattr(msg, "reasoning_content", None),
             finish_reason=choice.finish_reason,
+            model=response.model,  # what the server says answered; compare with provenance.model_requested
             usage=response.usage.model_dump() if response.usage else None,
             seconds=seconds,
         )

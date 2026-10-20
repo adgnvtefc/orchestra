@@ -210,6 +210,7 @@ class TestTracing:
         assert start["config"]["system_prompt"] == "You are a test agent."
         assert [t["function"]["name"] for t in start["tools"]] == ["echo", "count"]
         assert start["approver"] == "deny_all"  # NO_HUMAN's approver: tells you if this was an unattended run
+        assert start["provenance"]["model_requested"] == "test-model"
 
     def test_model_response_details(self):
         tracer = Tracer()
@@ -219,6 +220,7 @@ class TestTracing:
         assert response["step"] == 1
         assert response["message"] == {"role": "assistant", "content": "hi"}
         assert response["finish_reason"] == "stop"
+        assert response["model"] == "fake-model"  # what the server reported, not what was requested
         assert response["usage"]["prompt_tokens"] == 120
         assert response["seconds"] >= 0
 

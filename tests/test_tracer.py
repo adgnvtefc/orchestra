@@ -120,6 +120,13 @@ class TestRunLifecycle:
             "run_start", "task", {"model": "m"}, [{"t": 1}], "deny_all",
         )
 
+    def test_start_records_provenance(self):
+        tracer = Tracer()
+        tracer.start("t", {"model": "m", "system_prompt": "p"}, [], "a")
+        record = tracer.events[0]["provenance"]
+        assert set(record) == {"agent_version", "harness", "model_requested"}
+        assert record["model_requested"] == "m"
+
     def test_finish_writes_run_end_immediately(self):
         tracer = Tracer()
         tracer.start("t", {}, [], "a")
