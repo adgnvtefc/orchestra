@@ -6,7 +6,7 @@ import json
 
 from harness.agent import call_model, run_agent
 from harness.session import MESSAGES_FILE, Session
-from harness.tools import Toolset
+from harness.tools import ToolContext, Toolset
 from harness.tracer import Tracer
 from tests.fakes import NO_HUMAN, FakeClient, always, call, reply
 
@@ -31,7 +31,7 @@ def run(replies, task="do the thing", tools=("echo",), tracer=None, session=None
         session or new_session(),
         {**CONFIG, **config_overrides},
         client,
-        Toolset(list(tools), NO_HUMAN),
+        Toolset(list(tools), NO_HUMAN, ToolContext(workspace=_sessions_root.parent / "workspace")),
         tracer or Tracer(),
     )
     return answer, client

@@ -3,24 +3,26 @@
 import pytest
 
 from harness import orchestrator
-from harness.tools import REGISTRY, Tool
-from harness.tools import base
-from harness.tools.builtin import fs, shell
+from harness.tools import REGISTRY, Tool, ToolContext
 
 
-@pytest.fixture(autouse=True)
-def workspace(tmp_path, monkeypatch):
-    """Point every tool at a fresh temp directory, for every test (autouse).
+@pytest.fixture
+def workspace(tmp_path):
+    """A fresh temp workspace, for tests that call tools directly.
 
-    No test can ever touch the real workspace/. WORKSPACE is imported *by name* into
-    each tool module, so each module's copy has to be patched, not just base's.
-    .resolve() matters on macOS: tmp dirs live under /var, a symlink to /private/var.
+    (Runs through the orchestrator get their own workspace inside their session, and
+    sessions go to a temp folder, so no test ever touches a real folder.) .resolve()
+    matters on macOS: tmp dirs live under /var, a symlink to /private/var.
     """
     ws = tmp_path.resolve() / "workspace"
     ws.mkdir()
-    for module in (base, fs, shell):
-        monkeypatch.setattr(module, "WORKSPACE", ws)
     return ws
+
+
+@pytest.fixture
+def ctx(workspace):
+    """The ToolContext for calling tools directly: confined to the test's temp workspace."""
+    return ToolContext(workspace=workspace)
 
 
 @pytest.fixture(autouse=True)
@@ -69,16 +71,16 @@ def fake_tools(monkeypatch):
     guarded: permission "ask"; records each call in `guarded.calls`, to test enforcement.
     """
 
-    def echo(text: str, suffix: str = "") -> str:
+    def echo(ctx, text: str, suffix: str = "") -> str:
         return text + suffix
 
-    def boom() -> str:
+    def boom(ctx) -> str:
         raise RuntimeError("kaboom")
 
-    def count() -> int:
+    def count(ctx) -> int:
         return 42
 
-    def guarded(target: str) -> str:
+    def guarded(ctx, target: str) -> str:
         guarded.calls.append(target)
         return f"did {target}"
 

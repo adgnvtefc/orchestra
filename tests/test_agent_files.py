@@ -1,10 +1,12 @@
 """Lint the real agent definitions in agents/, so a broken config fails here instead of at runtime."""
 
+from pathlib import Path
+
 import pytest
 
 from harness.config_loader import load_agent_config
 from harness.orchestrator import AGENTS_DIR
-from harness.tools import Toolset
+from harness.tools import ToolContext, Toolset
 from tests.fakes import NO_HUMAN
 
 AGENT_FILES = sorted(AGENTS_DIR.glob("*.md"))
@@ -39,4 +41,4 @@ class TestAgentFile:
     def test_tools_exist(self, path):
         tools = load_agent_config(path).get("tools", [])
         assert isinstance(tools, list)
-        Toolset(tools, NO_HUMAN)  # raises on any unknown tool name
+        Toolset(tools, NO_HUMAN, ToolContext(workspace=Path(".")))  # raises on any unknown tool name

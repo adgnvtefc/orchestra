@@ -34,9 +34,10 @@ def test_lists_empty_workspace(approve):
     assert "empty" in answer.lower() or "no files" in answer.lower()
 
 
-def test_writes_and_runs_a_script(approve, workspace):
+def test_writes_and_runs_a_script(approve, sessions_dir):
     answer = orchestrator.run("Write primes.py that prints the first 10 primes, run it, and tell me the output")
-    assert (workspace / "primes.py").is_file()
+    (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
+    assert (session / "workspace" / "primes.py").is_file()
     assert "29" in answer  # the 10th prime
 
 

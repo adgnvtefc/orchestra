@@ -7,7 +7,7 @@ builtin/ and only depend on base.py.
 import json
 
 from harness.policy import Policy
-from harness.tools.base import Tool
+from harness.tools.base import Tool, ToolContext
 from harness.tools.builtin import BUILTIN_TOOLS
 
 # Every tool that exists, by name. Later, other sources (MCP servers, plugins) add to this too.
@@ -15,10 +15,11 @@ REGISTRY: dict[str, Tool] = {t.name: t for t in BUILTIN_TOOLS}
 
 
 class Toolset:
-    def __init__(self, names: list[str], policy: Policy):
+    def __init__(self, names: list[str], policy: Policy, context: ToolContext):
         """Pick tools from REGISTRY by name. Unknown names fail now, at startup, not mid-run.
 
         `policy` decides whether each call may run; execute() checks it before every call.
+        `context` (the workspace, ...) is passed to every tool as its first argument.
         """
         unknown = [n for n in names if n not in REGISTRY]
         if unknown:
@@ -28,6 +29,7 @@ class Toolset:
 
         # define a policy object for approval
         self.policy = policy
+        self.context = context
 
     def schemas(self) -> list[dict]:
         """What the model sees: only this agent's tools."""
@@ -64,7 +66,8 @@ class Toolset:
 
         try:
             # ** unpacks the dict as keyword args: {"path": "a.txt"} -> fn(path="a.txt")
-            return str(tool.fn(**arguments))
+            # the context goes first, positionally: the model's arguments can't replace it
+            return str(tool.fn(self.context, **arguments))
         except TypeError as e:  # missing / unexpected argument names
             return f"Error: bad arguments for {name}: {e}"
         except Exception as e:  # anything the tool itself raised (PermissionError, FileNotFoundError, ...)

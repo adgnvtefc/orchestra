@@ -1,28 +1,31 @@
-"""Filesystem tools. All paths are relative to WORKSPACE and can't escape it."""
+"""Filesystem tools. All paths are relative to the workspace and can't escape it."""
 
 from pathlib import Path
 
-from harness.tools.base import WORKSPACE, Tool, truncate
+from harness.tools.base import Tool, ToolContext, truncate
 
 
-def _resolve(path: str) -> Path:
-    """Turn a model-supplied path into an absolute path inside WORKSPACE, or raise.
+def _resolve(ctx: ToolContext, path: str) -> Path:
+    """Turn a model-supplied path into an absolute path inside the workspace, or raise.
 
     resolve() collapses ".." and follows symlinks *before* the check, so
-    "../../.ssh/id_rsa" and "link_to_home/.ssh" are both caught.
+    "../../.ssh/id_rsa" and "link_to_home/.ssh" are both caught. The workspace is
+    resolved too, so a workspace reached through a symlink (macOS: /var -> /private/var)
+    still contains its own files.
     """
-    full = (WORKSPACE / path).resolve()
-    if not full.is_relative_to(WORKSPACE):
+    workspace = ctx.workspace.resolve()
+    full = (workspace / path).resolve()
+    if not full.is_relative_to(workspace):
         raise PermissionError(f"Path {path!r} is outside the workspace. Use paths relative to the workspace.")
     return full
 
 
-def read_file(path: str) -> str:
-    """Return the contents of `path` (relative to WORKSPACE).
+def read_file(ctx: ToolContext, path: str) -> str:
+    """Return the contents of `path` (relative to the workspace).
 
-    Refuse paths that resolve outside WORKSPACE (think: "../../.ssh/id_rsa").
+    Refuse paths that resolve outside the workspace (think: "../../.ssh/id_rsa").
     """
-    full = _resolve(path)
+    full = _resolve(ctx, path)
     try:
         text = full.read_text()
     except UnicodeDecodeError:
@@ -32,12 +35,12 @@ def read_file(path: str) -> str:
     return truncate(text)
 
 
-def write_file(path: str, content: str) -> str:
-    """Write `content` to `path` (relative to WORKSPACE), creating parent dirs.
+def write_file(ctx: ToolContext, path: str, content: str) -> str:
+    """Write `content` to `path` (relative to the workspace), creating parent dirs.
 
     Same path rule as read_file. Return a short confirmation the model can read.
     """
-    full = _resolve(path)
+    full = _resolve(ctx, path)
     full.parent.mkdir(parents=True, exist_ok=True)
     full.write_text(content)
     return f"Wrote {len(content)} characters to {path}."

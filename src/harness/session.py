@@ -6,9 +6,10 @@ compaction (later) will rewrite a session's history, while traces never change.
 
 On disk, one folder per session:
 
-    sessions/<id>/session.json      id, agent, agent_version, created: written once, never changed
+    sessions/<id>/session.json      id, agent, agent_version, workspace, created: written once, never changed
     sessions/<id>/messages.jsonl    the conversation, one message per line, appended as it happens
     sessions/<id>/turn-001.jsonl    the trace of turn 1, turn-002.jsonl of turn 2, ...
+    sessions/<id>/workspace/        where the agent works, unless the session was given another folder
 
 A turn is one instruction plus everything the agent does about it: one run of the
 loop, one trace file. The trace files are the *only* record of which turns happened.
@@ -58,6 +59,12 @@ class Session:
         return self.meta["agent"]
 
     @property
+    def workspace(self) -> Path:
+        """The folder this session's tools work in. Fixed at creation, so a resumed session
+        keeps working on the same files."""
+        return Path(self.meta["workspace"])
+
+    @property
     def next_turn(self) -> int:
         """One past the number of turn traces on disk, however those turns ended."""
         return len(list(self.dir.glob("turn-*.jsonl"))) + 1
@@ -67,16 +74,26 @@ class Session:
         return self.dir / f"turn-{turn:03d}.jsonl"
 
     @classmethod
-    def create(cls, root: Path, agent: str, system_prompt: str, agent_version: str) -> "Session":
+    def create(
+        cls, root: Path, agent: str, system_prompt: str, agent_version: str, workspace: Path | None = None
+    ) -> "Session":
         """Start a new session. The system prompt becomes message 0 and is fixed from here on:
-        editing the agent file later doesn't change sessions that already exist."""
+        editing the agent file later doesn't change sessions that already exist.
+
+        `workspace`: an existing folder to work in. None (the default) gives the session its
+        own empty folder, sessions/<id>/workspace/, so runs never see each other's files.
+        """
         session_id = new_session_id(agent)
         directory = root / session_id
         directory.mkdir(parents=True)  # no exist_ok: a session folder is never reused
+        if workspace is None:
+            workspace = directory / "workspace"
+            workspace.mkdir()
         meta = {
             "id": session_id,
             "agent": agent,
             "agent_version": agent_version,  # what the session started with; each turn's trace has its own provenance
+            "workspace": str(workspace.resolve()),
             "created": _now(),
         }
         session = cls(directory, meta, [])

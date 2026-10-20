@@ -17,12 +17,13 @@ from harness.config_loader import load_agent_config
 from harness.policy import Policy, deny_all, terminal_approver
 from harness.provenance import agent_version
 from harness.session import Session
-from harness.tools import Toolset
+from harness.tools import ToolContext, Toolset
 from harness.tracer import Tracer
 
 # Located relative to this file, so `uv run harness` works from any directory.
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
-SESSIONS_DIR = Path(__file__).resolve().parents[2] / "sessions"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SESSIONS_DIR = PROJECT_ROOT / "sessions"
 
 
 def make_client() -> OpenAI:
@@ -41,18 +42,40 @@ def make_client() -> OpenAI:
     )
 
 
-def run(task: str, agent_name: str = "base", unattended: bool = False) -> str:
+def run(task: str, agent_name: str = "base", unattended: bool = False, workspace: Path | None = None) -> str:
     """Load the named agent's config, build what it needs, and run `task` as turn 1 of a new session.
 
     `unattended`: nobody is at the terminal, so every "ask" is answered no.
+    `workspace`: a folder to work in, overriding the agent file's `workspace:`. With
+    neither, the session gets its own fresh folder.
     """
     config = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
+    workspace = resolve_workspace(workspace, config.get("workspace"))  # checked before anything is created
     client = make_client()
     policy = Policy(approver=deny_all if unattended else terminal_approver)
-    toolset = Toolset(config.get("tools", []), policy)  # no `tools:` key means no tools: access is opt-in
     # The system prompt is pinned into the session here; later turns reuse it, not the file.
-    session = Session.create(SESSIONS_DIR, agent_name, config["system_prompt"], agent_version(config))
+    session = Session.create(SESSIONS_DIR, agent_name, config["system_prompt"], agent_version(config), workspace)
+    context = ToolContext(workspace=session.workspace)
+    toolset = Toolset(config.get("tools", []), policy, context)  # no `tools:` key means no tools: access is opt-in
     return run_turn(task, session, config, client, toolset)
+
+
+def resolve_workspace(from_cli: Path | None, from_config: str | None) -> Path | None:
+    """Which folder to work in: the command line wins, then the agent file; None means a fresh one.
+
+    A path in an agent file may use ~ and is relative to the project root, so it means
+    the same thing wherever you run from. The folder must already exist: a typo should
+    fail here, not quietly create a new empty folder somewhere.
+    """
+    if from_cli is not None:
+        path = from_cli
+    elif from_config is not None:
+        path = PROJECT_ROOT / Path(from_config).expanduser()  # an absolute path replaces PROJECT_ROOT
+    else:
+        return None
+    if not path.is_dir():
+        raise ValueError(f"workspace {str(path)!r} is not an existing folder")
+    return path.resolve()
 
 
 def run_turn(task: str, session: Session, config: dict, client: OpenAI, toolset: Toolset) -> str:
@@ -84,9 +107,14 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",  # a flag: present means True, absent means False
         help="never prompt; tools that would ask for approval are declined (for scripts and evals)",
     )
+    parser.add_argument(
+        "--workspace",
+        help="an existing folder for the agent to work in (default: a fresh folder inside the session)",
+    )
     args = parser.parse_args(argv)
 
     task = " ".join(args.task).strip()
     if not task:
         parser.error("the task is empty")  # prints usage and exits, like any other bad argument
-    print(run(task, agent_name=args.agent, unattended=args.unattended))
+    workspace = Path(args.workspace).expanduser() if args.workspace else None
+    print(run(task, agent_name=args.agent, unattended=args.unattended, workspace=workspace))

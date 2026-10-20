@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
@@ -150,7 +151,7 @@ class TestMain:
 
     def test_joins_words_into_one_task(self, run_calls, capsys):
         orchestrator.main(["list", "the", "files"])
-        assert run_calls == [{"task": "list the files", "agent_name": "base", "unattended": False}]
+        assert run_calls == [{"task": "list the files", "agent_name": "base", "unattended": False, "workspace": None}]
         assert capsys.readouterr().out.strip() == "printed answer"
 
     def test_quoted_task(self, run_calls):
@@ -167,7 +168,15 @@ class TestMain:
 
     def test_flags_after_task(self, run_calls):
         orchestrator.main(["do", "it", "--unattended", "--agent", "reader"])
-        assert run_calls == [{"task": "do it", "agent_name": "reader", "unattended": True}]
+        assert run_calls == [{"task": "do it", "agent_name": "reader", "unattended": True, "workspace": None}]
+
+    def test_workspace_flag(self, run_calls, tmp_path):
+        orchestrator.main(["--workspace", str(tmp_path), "hi"])
+        assert run_calls[0]["workspace"] == tmp_path
+
+    def test_workspace_flag_expands_home(self, run_calls):
+        orchestrator.main(["--workspace", "~", "hi"])
+        assert run_calls[0]["workspace"] == Path.home()
 
     def test_unknown_agent_lists_real_ones(self, run_calls, capsys):
         with pytest.raises(SystemExit) as exit_info:
@@ -221,7 +230,7 @@ class TestSessionsAndTraces:
         orchestrator.run("t")
         (session,) = self.session_dirs(sessions_dir)
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}", session.name)
-        assert sorted(p.name for p in session.iterdir()) == ["messages.jsonl", "session.json", "turn-001.jsonl"]
+        assert sorted(p.name for p in session.iterdir()) == ["messages.jsonl", "session.json", "turn-001.jsonl", "workspace"]
 
     def test_session_records_agent_and_version(self, fake_model, sessions_dir):
         orchestrator.run("t")
@@ -271,3 +280,79 @@ class TestSessionsAndTraces:
         assert self.read(session / "turn-001.jsonl")[-1]["outcome"] == "crashed"
         assert self.read(session / "messages.jsonl")[-1] == {"role": "user", "content": "t"}  # saved before the crash
         assert "session:" in capsys.readouterr().err  # printed even after a crash
+
+
+class TestWorkspaces:
+    """Where the agent works: --workspace, then the agent file's `workspace:`, then a fresh folder."""
+
+    @pytest.fixture
+    def writes_a_file(self, agents_dir, monkeypatch):
+        """A fake model that writes marker.txt, then answers."""
+        from tests.fakes import call
+
+        def install(workspace_line=""):
+            (agents_dir / "base.md").write_text(
+                f"---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - write_file\n{workspace_line}---\nPrompt.\n"
+            )
+            replies = [reply(tool_calls=[call("write_file", {"path": "marker.txt", "content": "hi"})]), reply("done")]
+            monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(replies))
+
+        return install
+
+    def only_session(self, sessions_dir):
+        (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
+        return session
+
+    def test_default_fresh_folder_inside_the_session(self, writes_a_file, sessions_dir):
+        writes_a_file()
+        orchestrator.run("t")
+        assert (self.only_session(sessions_dir) / "workspace" / "marker.txt").read_text() == "hi"
+
+    def test_cli_workspace(self, writes_a_file, sessions_dir, tmp_path):
+        writes_a_file()
+        project = tmp_path / "project"
+        project.mkdir()
+        orchestrator.run("t", workspace=project)
+        assert (project / "marker.txt").read_text() == "hi"
+        meta = json.loads((self.only_session(sessions_dir) / "session.json").read_text())
+        assert meta["workspace"] == str(project.resolve())
+
+    def test_agent_file_workspace(self, writes_a_file, tmp_path):
+        project = tmp_path / "from_config"
+        project.mkdir()
+        writes_a_file(f"workspace: {project}\n")
+        orchestrator.run("t")
+        assert (project / "marker.txt").read_text() == "hi"
+
+    def test_cli_wins_over_agent_file(self, writes_a_file, tmp_path):
+        from_config, from_cli = tmp_path / "from_config", tmp_path / "from_cli"
+        from_config.mkdir(), from_cli.mkdir()
+        writes_a_file(f"workspace: {from_config}\n")
+        orchestrator.run("t", workspace=from_cli)
+        assert (from_cli / "marker.txt").exists()
+        assert not (from_config / "marker.txt").exists()
+
+    def test_agent_file_relative_path_is_from_project_root(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(orchestrator, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "sub").mkdir()
+        assert orchestrator.resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
+
+    def test_agent_file_home_path(self):
+        assert orchestrator.resolve_workspace(None, "~") == Path.home().resolve()
+
+    def test_none_means_fresh(self):
+        assert orchestrator.resolve_workspace(None, None) is None
+
+    @pytest.mark.parametrize("source", ["cli", "config"])
+    def test_missing_folder_fails_before_anything_is_created(self, writes_a_file, sessions_dir, tmp_path, source):
+        missing = tmp_path / "typo"
+        writes_a_file(f"workspace: {missing}\n" if source == "config" else "")
+        with pytest.raises(ValueError, match="not an existing folder"):
+            orchestrator.run("t", workspace=missing if source == "cli" else None)
+        assert not missing.exists()  # not quietly created
+        assert not sessions_dir.exists() or not any(sessions_dir.iterdir())  # no session either
+
+    def test_workspace_is_part_of_the_agent_version(self, tmp_path):
+        from harness.provenance import agent_version
+        base = {"model": "m", "system_prompt": "p"}
+        assert agent_version(base) != agent_version({**base, "workspace": str(tmp_path)})

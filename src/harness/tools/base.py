@@ -6,14 +6,21 @@ from typing import Callable
 
 from harness.policy import Permission
 
-# All file and shell access is confined to this directory for Phase 1.
-# (parents[3]: base.py -> tools -> harness -> src -> project root)
-# NOTE: Unscalable, fix later.
-WORKSPACE = Path(__file__).resolve().parents[3] / "workspace"
-
 # ~10k chars is roughly 2.5k tokens: enough to be useful, small enough that one
 # tool result can't eat a 32k context window.
 MAX_OUTPUT_CHARS = 10_000
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """What a tool call runs *in*, as opposed to what it was asked to do (the arguments).
+
+    Toolset passes it as the first argument of every tool function. The model never
+    sees it and can't set it: it isn't in any schema.
+    """
+
+    workspace: Path  # all file access and shell commands are confined to this directory
+
 
 # makes so cannot modify after creation
 @dataclass(frozen=True)

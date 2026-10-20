@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-20, sessions: every run is a turn of a saved conversation (on top of commit `c84f069`)
+**Last updated:** 2026-10-20, per-session workspaces via ToolContext; bash runs with an allowlisted environment
 
 ---
 
@@ -41,7 +41,7 @@ flowchart TD
 
     agentloop["Agent loop<br/>agent.py: run_agent()"]
     omlx[("oMLX server<br/>Qwen3.8-27B")]
-    ws[("workspace/<br/>the only folder tools can touch")]
+    ws[("the session's workspace<br/>sessions/&lt;id&gt;/workspace/ by default,<br/>or --workspace / workspace: in the agent file")]
     sessions[("sessions/&lt;id&gt;/<br/>session.json, messages.jsonl,<br/>turn-001.jsonl, turn-002.jsonl, ...")]
 
     user --> cli
@@ -158,9 +158,16 @@ flowchart TD
 
 | Tool | Permission | What it does | Guardrails |
 |---|---|---|---|
-| `read_file` | allow | Return a file's text | Paths can't leave `workspace/`; binary/empty files say so; long output truncated (head + tail) |
+| `read_file` | allow | Return a file's text | Paths can't leave the workspace; binary/empty files say so; long output truncated (head + tail) |
 | `write_file` | allow | Create or overwrite a file | Same path rule; creates parent folders |
-| `bash` | **ask** | Run a shell command in `workspace/` | Approval first; stdin closed; timeout kills the whole process group; output truncated; exit code always reported |
+| `bash` | **ask** | Run a shell command in the workspace | Approval first; **allowlisted environment only** (no API keys, not the harness's own Python); stdin closed; timeout kills the whole process group; output truncated; exit code always reported |
+
+Every tool function takes a `ToolContext` first (today: just the workspace path). `Toolset`
+passes it on every call; it isn't in any schema, so the model can neither see nor set it.
+
+**Which workspace:** `--workspace PATH` wins, then `workspace:` in the agent file (relative to
+the project root), else a fresh empty folder inside the session. A given folder must already
+exist. The session records its workspace when created, so resuming works on the same files.
 
 An agent only gets the tools its `.md` file lists. A tool it wasn't given can't run,
 even if the model invents a call to it.
@@ -194,9 +201,10 @@ and later compaction may rewrite it); the trace is the *record* (everything, nev
 
 ```text
 sessions/2026-10-20T14-13-59_base_8569/
-  session.json      id, agent, agent_version, created: written once, never changed
+  session.json      id, agent, agent_version, workspace, created: written once, never changed
   messages.jsonl    the conversation, one message per line
   turn-001.jsonl    trace of turn 1; the trace files are the only record of which turns happened
+  workspace/        where the agent works (unless the session was given another folder)
 ```
 
 ---

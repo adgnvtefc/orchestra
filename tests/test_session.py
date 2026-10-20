@@ -54,7 +54,7 @@ class TestCreate:
         assert meta["agent"] == session.agent == "base"
         assert meta["agent_version"] == "abc123def456"
         assert "created" in meta
-        assert set(meta) == {"id", "agent", "agent_version", "created"}  # nothing that changes later
+        assert set(meta) == {"id", "agent", "agent_version", "workspace", "created"}  # nothing that changes later
 
     def test_system_prompt_is_message_zero(self, session):
         assert session.messages == ({"role": "system", "content": "You are a test agent."},)
@@ -67,6 +67,32 @@ class TestCreate:
 
     def test_next_turn_starts_at_one(self, session):
         assert session.next_turn == 1
+
+
+class TestWorkspace:
+    def test_default_is_a_fresh_folder_inside_the_session(self, session):
+        assert session.workspace == (session.dir / "workspace").resolve()
+        assert session.workspace.is_dir()
+        assert list(session.workspace.iterdir()) == []
+
+    def test_sessions_never_share_a_default_workspace(self, root):
+        a = Session.create(root, "base", "p", "v")
+        b = Session.create(root, "base", "p", "v")
+        assert a.workspace != b.workspace
+
+    def test_given_folder_is_used_and_not_copied(self, root, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        session = Session.create(root, "base", "p", "v", workspace=project)
+        assert session.workspace == project.resolve()
+        assert not (session.dir / "workspace").exists()  # no unused default folder
+
+    def test_recorded_and_kept_on_resume(self, root, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        session = Session.create(root, "base", "p", "v", workspace=project)
+        assert json.loads((session.dir / SESSION_FILE).read_text())["workspace"] == str(project.resolve())
+        assert Session.load(root, session.id).workspace == project.resolve()
 
 
 class TestAppend:
@@ -161,7 +187,7 @@ class TestTurns:
 
     def test_no_temp_file_left_behind(self, session):
         # session.json is written via a temp file + rename; the temp file never lingers.
-        assert sorted(p.name for p in session.dir.iterdir()) == [MESSAGES_FILE, SESSION_FILE]
+        assert sorted(p.name for p in session.dir.iterdir()) == [MESSAGES_FILE, SESSION_FILE, "workspace"]
 
 
 class TestRepairOnLoad:
