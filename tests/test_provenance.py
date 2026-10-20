@@ -102,8 +102,8 @@ class TestGitState:
 class TestCollect:
     def test_fields(self):
         record = collect(CONFIG)
+        assert set(record) == {"agent_version", "harness"}
         assert record["agent_version"] == agent_version(CONFIG)
-        assert record["model_requested"] == "m"
         assert set(record["harness"]) == {"commit", "dirty"}
 
     def test_harness_version_is_measured_once_per_process(self, monkeypatch):

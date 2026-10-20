@@ -15,12 +15,14 @@ from openai import OpenAI
 from harness.agent import run_agent
 from harness.config_loader import load_agent_config
 from harness.policy import Policy, deny_all, terminal_approver
+from harness.provenance import agent_version
+from harness.session import Session
 from harness.tools import Toolset
-from harness.tracer import Tracer, new_trace_path
+from harness.tracer import Tracer
 
 # Located relative to this file, so `uv run harness` works from any directory.
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
-TRACES_DIR = Path(__file__).resolve().parents[2] / "traces"
+SESSIONS_DIR = Path(__file__).resolve().parents[2] / "sessions"
 
 
 def make_client() -> OpenAI:
@@ -40,7 +42,7 @@ def make_client() -> OpenAI:
 
 
 def run(task: str, agent_name: str = "base", unattended: bool = False) -> str:
-    """Load the named agent's config, build its client, policy, toolset, and tracer, run it on `task`.
+    """Load the named agent's config, build what it needs, and run `task` as turn 1 of a new session.
 
     `unattended`: nobody is at the terminal, so every "ask" is answered no.
     """
@@ -48,13 +50,20 @@ def run(task: str, agent_name: str = "base", unattended: bool = False) -> str:
     client = make_client()
     policy = Policy(approver=deny_all if unattended else terminal_approver)
     toolset = Toolset(config.get("tools", []), policy)  # no `tools:` key means no tools: access is opt-in
-    # crates a new tracer file to write in given agent name and timestamp
-    with Tracer(new_trace_path(TRACES_DIR, agent_name)) as tracer:
+    # The system prompt is pinned into the session here; later turns reuse it, not the file.
+    session = Session.create(SESSIONS_DIR, agent_name, config["system_prompt"], agent_version(config))
+    return run_turn(task, session, config, client, toolset)
+
+
+def run_turn(task: str, session: Session, config: dict, client: OpenAI, toolset: Toolset) -> str:
+    """Run one turn of `session`. Its trace file is created first, so the turn counts even if it crashes."""
+    # creates this turn's trace file: sessions/<id>/turn-001.jsonl
+    with Tracer(session.trace_path(session.next_turn)) as tracer:
         try:
-            return run_agent(task, config, client, toolset, tracer)
+            return run_agent(task, session, config, client, toolset, tracer)
         finally:
             # stderr, so stdout stays just the answer (useful when scripts capture it)
-            print(f"trace: {tracer.path}", file=sys.stderr)
+            print(f"session: {session.id}  trace: {tracer.path.name}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> None:

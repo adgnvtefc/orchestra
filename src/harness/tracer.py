@@ -15,7 +15,6 @@ still leaves a trace up to the moment it died. Events are also kept in memory
 
 import json
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,16 +23,6 @@ from harness import provenance
 
 if TYPE_CHECKING:  # only for type hints; never imported at runtime
     from openai.types.chat import ChatCompletion, ChatCompletionMessageToolCall
-
-
-def new_trace_path(directory: Path, label: str) -> Path:
-    """A new, unique trace file: <directory>/2026-10-08T14-03-22_<label>_1a2b.jsonl (sorts by time).
-
-    The naming convention lives here; *which* directory is the caller's decision.
-    The random suffix keeps two runs started in the same second from colliding.
-    """
-    stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    return directory / f"{stamp}_{label}_{uuid.uuid4().hex[:4]}.jsonl"
 
 
 class Tracer:
@@ -85,7 +74,7 @@ class Tracer:
             # dropped from the conversation history, but kept here: it's *why* the model did what it did
             reasoning=getattr(msg, "reasoning_content", None),
             finish_reason=choice.finish_reason,
-            model=response.model,  # what the server says answered; compare with provenance.model_requested
+            model=response.model,  # what the server says answered; compare with run_start.config.model
             usage=response.usage.model_dump() if response.usage else None,
             seconds=seconds,
         )

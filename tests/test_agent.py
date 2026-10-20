@@ -2,27 +2,46 @@
 
 import pytest
 
+import json
+
 from harness.agent import call_model, run_agent
+from harness.session import MESSAGES_FILE, Session
 from harness.tools import Toolset
 from harness.tracer import Tracer
 from tests.fakes import NO_HUMAN, FakeClient, always, call, reply
 
 CONFIG = {"model": "test-model", "temperature": 0.3, "max_steps": 5, "system_prompt": "You are a test agent."}
 
+_sessions_root = None  # set per test by _setup below
 
-def run(replies, task="do the thing", tools=("echo",), tracer=None, **config_overrides):
-    """Run the loop against scripted replies. Returns (final answer, client) for inspection.
 
-    Pass your own in-memory `tracer` to inspect the events afterwards.
+def new_session(system_prompt=CONFIG["system_prompt"]) -> Session:
+    return Session.create(_sessions_root, "test", system_prompt, "v")
+
+
+def run(replies, task="do the thing", tools=("echo",), tracer=None, session=None, **config_overrides):
+    """Run one turn against scripted replies. Returns (final answer, client) for inspection.
+
+    Pass your own in-memory `tracer` or `session` to inspect them afterwards; by default
+    each call gets a fresh session.
     """
     client = FakeClient(replies)
-    answer = run_agent(task, {**CONFIG, **config_overrides}, client, Toolset(list(tools), NO_HUMAN), tracer or Tracer())
+    answer = run_agent(
+        task,
+        session or new_session(),
+        {**CONFIG, **config_overrides},
+        client,
+        Toolset(list(tools), NO_HUMAN),
+        tracer or Tracer(),
+    )
     return answer, client
 
 
 @pytest.fixture(autouse=True)
-def _fake_tools(fake_tools):
-    """Every test here may use the echo/boom/count test tools."""
+def _setup(fake_tools, tmp_path):
+    """Every test here may use the echo/boom/count test tools, and gets its own sessions folder."""
+    global _sessions_root
+    _sessions_root = tmp_path / "sessions"
 
 
 class TestFinishing:
@@ -210,7 +229,7 @@ class TestTracing:
         assert start["config"]["system_prompt"] == "You are a test agent."
         assert [t["function"]["name"] for t in start["tools"]] == ["echo", "count"]
         assert start["approver"] == "deny_all"  # NO_HUMAN's approver: tells you if this was an unattended run
-        assert start["provenance"]["model_requested"] == "test-model"
+        assert start["config"]["model"] == "test-model"  # the model asked for; provenance doesn't repeat it
 
     def test_model_response_details(self):
         tracer = Tracer()
@@ -220,7 +239,7 @@ class TestTracing:
         assert response["step"] == 1
         assert response["message"] == {"role": "assistant", "content": "hi"}
         assert response["finish_reason"] == "stop"
-        assert response["model"] == "fake-model"  # what the server reported, not what was requested
+        assert response["model"] == "fake-model"  # what the server reported; compare with run_start.config.model
         assert response["usage"]["prompt_tokens"] == 120
         assert response["seconds"] >= 0
 
@@ -289,3 +308,46 @@ class TestTracing:
             with Tracer() as tracer:
                 run(interrupting(), tracer=tracer)
         assert tracer.events[-1]["outcome"] == "interrupted"
+
+
+class TestSession:
+    """The session owns the conversation: the model sees exactly what the session holds."""
+
+    def saved(self, session):
+        return [json.loads(line) for line in (session.dir / MESSAGES_FILE).read_text().splitlines()]
+
+    def test_saved_history_is_exactly_what_the_model_saw(self):
+        # Memory and disk can't drift: the last request plus the final answer is the whole file.
+        session = new_session()
+        run([reply(tool_calls=[call("echo", {"text": "a"})]), reply("final")], session=session)
+        assert self.saved(session) == list(session.messages)
+        assert session.messages[-1] == {"role": "assistant", "content": "final"}
+
+    def test_last_request_matches_saved_history(self):
+        session = new_session()
+        _, client = run([reply(tool_calls=[call("echo", {"text": "a"})]), reply("final")], session=session)
+        assert client.requests[-1]["messages"] + [{"role": "assistant", "content": "final"}] == self.saved(session)
+
+    def test_second_turn_continues_the_conversation(self):
+        session = new_session()
+        run([reply("first answer")], task="first task", session=session)
+        _, client = run([reply("second answer")], task="second task", session=session)
+        assert client.requests[0]["messages"] == [
+            {"role": "system", "content": "You are a test agent."},
+            {"role": "user", "content": "first task"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second task"},
+        ]
+
+    def test_system_prompt_comes_from_the_session_not_the_config(self):
+        # The session pinned its prompt at creation; editing the agent file later doesn't change it.
+        session = new_session(system_prompt="pinned prompt")
+        _, client = run([reply("ok")], session=session, system_prompt="edited prompt")
+        assert client.requests[0]["messages"][0] == {"role": "system", "content": "pinned prompt"}
+
+    def test_crash_keeps_everything_up_to_the_crash(self):
+        session = new_session()
+        with pytest.raises(AssertionError):
+            run([reply(tool_calls=[call("echo", {"text": "a"})])], session=session)  # no reply for step 2
+        roles = [m["role"] for m in self.saved(session)]
+        assert roles == ["system", "user", "assistant", "tool"]

@@ -1,15 +1,17 @@
 """The agent loop: call the model, run any tool calls, feed results back, repeat."""
 
 import time
+from collections.abc import Sequence
 
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 
+from harness.session import Session
 from harness.tools import Toolset
 from harness.tracer import Tracer
 
 
-def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float, tools: list[dict]) -> ChatCompletion:
+def call_model(client: OpenAI, messages: Sequence[dict], model: str, temperature: float, tools: list[dict]) -> ChatCompletion:
     """Send `messages` + `tools` (schemas) to `model`. Return the whole response.
 
     The whole response, not just the message: `usage` (token counts, cache hits, and
@@ -31,7 +33,7 @@ def call_model(client: OpenAI, messages: list[dict], model: str, temperature: fl
     #   }
     kwargs = {
         "model": model,
-        "messages": messages,
+        "messages": list(messages),  # a session hands us a read-only tuple; the request wants a list
         "temperature": temperature,
     }
     # Some servers reject an empty "tools" list, so only send it when the agent has tools.
@@ -63,12 +65,16 @@ def call_model(client: OpenAI, messages: list[dict], model: str, temperature: fl
 
 # PROVIDER-SPECIFIC: oMLX/Qwen puts thinking in `reasoning_content`; dropping it is a cache
 # optimization. Anthropic's native API requires thinking blocks to be sent back. Fix later.
-def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset, tracer: Tracer) -> str:
-    """Run the loop until the model answers without calling a tool, or max_steps runs out.
+def run_agent(task: str, session: Session, config: dict, client: OpenAI, toolset: Toolset, tracer: Tracer) -> str:
+    """Run one turn: add `task` to the session, loop until the model answers without
+    calling a tool, or max_steps runs out.
 
-    `config` comes from config_loader.load_agent_config; `client` from make_client;
-    `toolset` holds only the tools this agent's config lists; `tracer` records the run.
-    The agent is handed everything it needs and never goes looking for settings itself.
+    `session` owns the conversation: earlier turns are already in it (its system prompt
+    is message 0), and everything this turn adds goes through session.append(), which
+    also saves it. `config` comes from config_loader.load_agent_config; `client` from
+    make_client; `toolset` holds only the tools this agent's config lists; `tracer`
+    records the turn. The agent is handed everything it needs and never goes looking
+    for settings itself.
 
     Return the model's final text answer. Print each tool call and a short
     preview of its result as you go, so you can watch the agent work.
@@ -76,20 +82,18 @@ def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset, tracer:
     max_steps = config["max_steps"]
     tools = toolset.schemas()  # same list every turn, which keeps the prompt cache hitting
 
-    # The conversation IS the agent's memory. Every turn we send all of it.
-    messages = [
-        {"role": "system", "content": config["system_prompt"]},
-        {"role": "user", "content": task},
-    ]
-
     # run_start now. run_end comes from tracer.finish() below, or, if this function
     # raises, from the `with Tracer(...)` block of whoever created the tracer.
     tracer.start(task, config, tools, approver=toolset.policy.approver.__name__)
 
+    # The conversation IS the agent's memory. Every turn we send all of it: the system
+    # prompt, every earlier turn, and now this task.
+    session.append({"role": "user", "content": task})
+
     for step in range(1, max_steps + 1):
         # calls the client with model and these messages
         started = time.monotonic()
-        response = call_model(client, messages, config["model"], config["temperature"], tools)
+        response = call_model(client, session.messages, config["model"], config["temperature"], tools)
         tracer.model_response(step, response, _since(started))
         msg = response.choices[0].message
 
@@ -97,7 +101,7 @@ def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset, tracer:
         # so the tool results we add next have something to point back to.
         # reasoning_content is dropped: smaller context, and earlier messages stay byte-identical,
         # which keeps the server's prompt cache hitting. (Keeping it is a Phase 3 experiment.)
-        messages.append(msg.model_dump(exclude_none=True, exclude={"reasoning_content"}))
+        session.append(msg.model_dump(exclude_none=True, exclude={"reasoning_content"}))
 
         # the model needs to make tool calls for there to be indicated a final response
         if not msg.tool_calls:
@@ -117,7 +121,7 @@ def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset, tracer:
             preview = result if len(result) <= 200 else result[:200] + "..."
             print(f"  -> {preview}")
             # give tool full context id
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            session.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     answer = f"Stopped after {max_steps} steps without a final answer."
     tracer.finish("max_steps", answer)

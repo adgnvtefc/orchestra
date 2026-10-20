@@ -59,6 +59,6 @@ def collect(config: dict) -> dict:
     return {
         "agent_version": agent_version(config),
         "harness": harness_version(),
-        "model_requested": config.get("model"),
-        # model_reported (what the server says actually answered) is in each model_response event
+        # The model asked for is config["model"], right next to this in run_start; the model
+        # the server says actually answered is in each model_response event.
     }

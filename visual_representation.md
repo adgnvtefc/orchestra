@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-20, provenance in every trace (on top of commit `21984a1`)
+**Last updated:** 2026-10-20, sessions: every run is a turn of a saved conversation (on top of commit `c84f069`)
 
 ---
 
@@ -34,14 +34,15 @@ flowchart TD
         client["OpenAI client"]
         policy["Policy<br/>terminal_approver, or<br/>deny_all if --unattended"]
         toolset["Toolset<br/>only the tools this agent lists"]
-        tracer["Tracer<br/>one new file per run"]
+        session["Session<br/>owns the conversation;<br/>system prompt pinned at creation"]
+        tracer["Tracer<br/>one file per turn"]
         policy --> toolset
     end
 
     agentloop["Agent loop<br/>agent.py: run_agent()"]
     omlx[("oMLX server<br/>Qwen3.8-27B")]
     ws[("workspace/<br/>the only folder tools can touch")]
-    traces[("traces/<br/>one .jsonl file per run")]
+    sessions[("sessions/&lt;id&gt;/<br/>session.json, messages.jsonl,<br/>turn-001.jsonl, turn-002.jsonl, ...")]
 
     user --> cli
     run -->|reads| inputs
@@ -50,8 +51,10 @@ flowchart TD
     agentloop <-->|"POST /v1/chat/completions"| omlx
     agentloop <-->|"every tool call"| toolset
     toolset <--> ws
+    agentloop -->|"every message: append"| session
     agentloop -->|"every step: events"| tracer
-    tracer --> traces
+    session --> sessions
+    tracer --> sessions
 ```
 
 ---
@@ -72,18 +75,21 @@ sequenceDiagram
     participant P as Policy
     participant F as Tool function
     participant R as Tracer
+    participant S as Session
 
     You->>O: harness "write primes.py and run it"
     O->>O: load config, make client,<br/>build Policy + Toolset
-    O->>A: run_agent(task, config, client, toolset)
-    A->>A: messages = [system, user task]<br/>tools = toolset.schemas()
-    A->>R: start: run_start (task, config, tools, approver)
+    O->>S: Session.create: new folder,<br/>system prompt = message 0
+    O->>R: Tracer(session.trace_path(next turn))<br/>turn-001.jsonl exists from here on
+    O->>A: run_agent(task, session, config, client, toolset, tracer)
+    A->>R: start: run_start (task, config, tools, approver, provenance)
+    A->>S: append {user: task}
 
     loop each step, up to max_steps
         A->>M: messages + tool schemas
         M-->>A: response: message, finish_reason, usage
         A->>R: model_response (message, reasoning,<br/>usage, seconds)
-        A->>A: append message to history<br/>(reasoning dropped here, kept in the trace)
+        A->>S: append assistant message<br/>(reasoning dropped here, kept in the trace)
         alt no tool_calls
             A->>R: finish: run_end (outcome: answered)
             A-->>O: final text answer
@@ -104,7 +110,7 @@ sequenceDiagram
                 end
                 T-->>A: result or error, always a string
                 A->>R: tool_call (name, raw arguments,<br/>result, seconds)
-                A->>A: append {role: tool, tool_call_id, content}
+                A->>S: append {role: tool, tool_call_id, content}
             end
         end
     end
@@ -175,14 +181,32 @@ answer:    "Done! I created primes.py and ran it. The output was ..."
 History is append-only: each request starts with the previous one, unchanged. That's
 what lets oMLX reuse its prompt cache instead of re-reading the whole conversation.
 
+The history lives in the **session**, which owns it: `session.messages` is read-only, and
+`session.append()` is the only way to add to it, saving each message to `messages.jsonl`
+as it happens. A second turn in the same session starts from all of the first:
+
+```text
+turn 2, request 1: [system] [user: turn 1 task] ... [assistant: turn 1 answer] [user: turn 2 task]
+```
+
+**Session vs. trace:** the session is the agent's *memory* (exactly what the model sees,
+and later compaction may rewrite it); the trace is the *record* (everything, never rewritten).
+
+```text
+sessions/2026-10-20T14-13-59_base_8569/
+  session.json      id, agent, agent_version, created: written once, never changed
+  messages.jsonl    the conversation, one message per line
+  turn-001.jsonl    trace of turn 1; the trace files are the only record of which turns happened
+```
+
 ---
 
 ## 6. What a trace records
 
-One JSONL file per run in `traces/` (gitignored), e.g. `2026-10-08T01-17-47_base_5739.jsonl`.
+One JSONL file per turn, inside its session: `sessions/<id>/turn-001.jsonl` (gitignored).
 The format is defined in one place, `tracer.py`: the agent reports what happened
 (`start`, `model_response`, `tool_call`, `finish`), and the tracer decides what's recorded.
-One tracer = one run = one file. The orchestrator owns it with `with Tracer(path) as tracer:`,
+One tracer = one turn = one file. The orchestrator owns it with `with Tracer(path) as tracer:`,
 so even a crash or Ctrl-C ends the trace with exactly one `run_end`.
 Each line is flushed as it happens, so a crashed run still leaves its trace.
 From the real primes run above:
@@ -212,7 +236,7 @@ A hash *identifies* content; it doesn't store it.
 |---|---|---|
 | `agent_version` | 12-char hash of the agent definition (name excluded): same content, same version | Yes: the full definition is in `run_start.config` |
 | `harness.commit` / `harness.dirty` | git commit of the harness code; whether there were uncommitted changes | Via `git checkout`, only if `dirty` is false |
-| `model_requested` (+ `model` per response) | the model asked for, and the one the server says answered | Only if the same weights still exist |
+| `config.model` (+ `model` per response) | the model asked for, and the one the server says answered | Only if the same weights still exist |
 
 ---
 
@@ -225,6 +249,8 @@ tools never import the machinery around them, and `policy.py` imports nothing at
 flowchart TD
     orch["orchestrator.py<br/>control plane, CLI"] --> agent["agent.py<br/>the loop"]
     orch --> loader["config_loader.py<br/>reads agents/*.md"]
+    orch --> sessionmod["session.py<br/>conversation on disk"]
+    agent --> sessionmod
     orch --> policy["policy.py<br/>Policy, approvers"]
     orch --> tools_api["tools/__init__.py<br/>public API"]
     orch --> tracer["tracer.py<br/>JSONL events"]
@@ -245,6 +271,7 @@ flowchart TD
 
 What's planned, in rough order. Each becomes a diagram change when it lands.
 
+- **`harness chat` / resume:** many turns in one session, continued later (the next step).
 - **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
 - **Sandbox:** `bash` runs in a container; then a `--yes` mode can auto-approve safely.

@@ -24,10 +24,11 @@ def workspace(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def traces_dir(tmp_path, monkeypatch):
-    """Send every run's trace to a temp directory, for every test (autouse): tests never fill traces/."""
-    directory = tmp_path / "traces"
-    monkeypatch.setattr(orchestrator, "TRACES_DIR", directory)
+def sessions_dir(tmp_path, monkeypatch):
+    """Put every session (and its traces) in a temp directory, for every test (autouse):
+    tests never fill the real sessions/."""
+    directory = tmp_path / "sessions"
+    monkeypatch.setattr(orchestrator, "SESSIONS_DIR", directory)
     return directory
 
 

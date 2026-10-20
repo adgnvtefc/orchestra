@@ -65,8 +65,8 @@ def captured_run(monkeypatch):
     """Replace make_client and run_agent; record what the orchestrator hands the agent."""
     seen = {}
 
-    def fake_run_agent(task, config, client, toolset, tracer):
-        seen.update(task=task, config=config, client=client, toolset=toolset, tracer=tracer)
+    def fake_run_agent(task, session, config, client, toolset, tracer):
+        seen.update(task=task, session=session, config=config, client=client, toolset=toolset, tracer=tracer)
         return "agent result"
 
     monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("unused")]))
@@ -197,50 +197,77 @@ class TestMain:
         assert run_calls[0]["task"] == "from argv"
 
 
-class TestTraceFiles:
+class TestSessionsAndTraces:
+    """Each `harness "task"` run is a new session with one turn: sessions/<id>/turn-001.jsonl."""
+
     @pytest.fixture
     def fake_model(self, agents_dir, monkeypatch):
-        write_agent(agents_dir, "base", tools=["read_file"])
+        write_agent(agents_dir, "base", tools=["read_file"], prompt="Pinned prompt.")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("the answer")]))
 
-    def trace_files(self, traces_dir):
-        return sorted(traces_dir.glob("*.jsonl"))
+    def session_dirs(self, sessions_dir):
+        return sorted(p for p in sessions_dir.iterdir() if p.is_dir())
 
-    def test_each_run_writes_one_trace(self, fake_model, traces_dir):
-        orchestrator.run("t")
-        orchestrator.run("t")
-        assert len(self.trace_files(traces_dir)) == 2
+    def read(self, path):
+        return [json.loads(line) for line in path.read_text().splitlines()]
 
-    def test_trace_name(self, fake_model, traces_dir):
+    def test_each_run_is_a_new_session(self, fake_model, sessions_dir, monkeypatch):
         orchestrator.run("t")
-        name = self.trace_files(traces_dir)[0].name
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}\.jsonl", name)
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("again")]))
+        orchestrator.run("t")
+        assert len(self.session_dirs(sessions_dir)) == 2
 
-    def test_trace_contents(self, fake_model, traces_dir):
+    def test_session_folder_contents(self, fake_model, sessions_dir):
+        orchestrator.run("t")
+        (session,) = self.session_dirs(sessions_dir)
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}", session.name)
+        assert sorted(p.name for p in session.iterdir()) == ["messages.jsonl", "session.json", "turn-001.jsonl"]
+
+    def test_session_records_agent_and_version(self, fake_model, sessions_dir):
+        orchestrator.run("t")
+        (session,) = self.session_dirs(sessions_dir)
+        meta = json.loads((session / "session.json").read_text())
+        trace = self.read(session / "turn-001.jsonl")
+        assert meta["agent"] == "base"
+        assert meta["agent_version"] == trace[0]["provenance"]["agent_version"]  # same config, same hash
+
+    def test_messages_saved(self, fake_model, sessions_dir):
         orchestrator.run("say hi")
-        events = [json.loads(line) for line in self.trace_files(traces_dir)[0].read_text().splitlines()]
+        (session,) = self.session_dirs(sessions_dir)
+        assert self.read(session / "messages.jsonl") == [
+            {"role": "system", "content": "Pinned prompt."},
+            {"role": "user", "content": "say hi"},
+            {"role": "assistant", "content": "the answer"},
+        ]
+
+    def test_trace_contents(self, fake_model, sessions_dir):
+        orchestrator.run("say hi")
+        (session,) = self.session_dirs(sessions_dir)
+        events = self.read(session / "turn-001.jsonl")
         assert [e["event"] for e in events] == ["run_start", "model_response", "run_end"]
         assert events[0]["task"] == "say hi"
         assert events[0]["config"]["name"] == "base"
         assert events[0]["approver"] == "terminal_approver"
         assert events[-1]["answer"] == "the answer"
 
-    def test_unattended_is_visible_in_trace(self, fake_model, traces_dir):
+    def test_unattended_is_visible_in_trace(self, fake_model, sessions_dir):
         orchestrator.run("t", unattended=True)
-        start = json.loads(self.trace_files(traces_dir)[0].read_text().splitlines()[0])
-        assert start["approver"] == "deny_all"
+        (session,) = self.session_dirs(sessions_dir)
+        assert self.read(session / "turn-001.jsonl")[0]["approver"] == "deny_all"
 
-    def test_path_printed_to_stderr(self, fake_model, traces_dir, capsys):
+    def test_session_and_trace_printed_to_stderr(self, fake_model, sessions_dir, capsys):
         orchestrator.run("t")
+        (session,) = self.session_dirs(sessions_dir)
         captured = capsys.readouterr()
-        assert f"trace: {self.trace_files(traces_dir)[0]}" in captured.err
-        assert "trace:" not in captured.out  # stdout stays clean for the answer
+        assert f"session: {session.name}  trace: turn-001.jsonl" in captured.err
+        assert "session:" not in captured.out  # stdout stays clean for the answer
 
-    def test_crashed_run_still_leaves_a_trace(self, agents_dir, traces_dir, monkeypatch, capsys):
+    def test_crashed_run_still_leaves_session_and_trace(self, agents_dir, sessions_dir, monkeypatch, capsys):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # first model call fails
         with pytest.raises(AssertionError):
             orchestrator.run("t")
-        events = [json.loads(line) for line in self.trace_files(traces_dir)[0].read_text().splitlines()]
-        assert events[-1]["outcome"] == "crashed"
-        assert "trace:" in capsys.readouterr().err  # the path is printed even after a crash
+        (session,) = self.session_dirs(sessions_dir)
+        assert self.read(session / "turn-001.jsonl")[-1]["outcome"] == "crashed"
+        assert self.read(session / "messages.jsonl")[-1] == {"role": "user", "content": "t"}  # saved before the crash
+        assert "session:" in capsys.readouterr().err  # printed even after a crash

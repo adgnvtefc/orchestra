@@ -1,12 +1,11 @@
 """Tracer: JSONL events, written and flushed one line at a time."""
 
 import json
-import re
 from pathlib import Path
 
 import pytest
 
-from harness.tracer import Tracer, new_trace_path
+from harness.tracer import Tracer
 
 
 def read_lines(path: Path) -> list[dict]:
@@ -92,20 +91,6 @@ class TestFile:
         assert len(read_lines(path)) == 1
 
 
-class TestNewTracePath:
-    def test_in_given_directory_with_label(self, tmp_path):
-        path = new_trace_path(tmp_path, "base")
-        assert path.parent == tmp_path
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}\.jsonl", path.name)
-
-    def test_unique_within_a_second(self, tmp_path):
-        assert len({new_trace_path(tmp_path, "base") for _ in range(50)}) == 50
-
-    def test_does_not_create_anything(self, tmp_path):
-        new_trace_path(tmp_path / "not_yet", "base")
-        assert not (tmp_path / "not_yet").exists()  # the Tracer creates the file, not the path helper
-
-
 class TestRunLifecycle:
     """start() writes run_start; exactly one run_end follows, from finish() or from __exit__."""
 
@@ -124,8 +109,7 @@ class TestRunLifecycle:
         tracer = Tracer()
         tracer.start("t", {"model": "m", "system_prompt": "p"}, [], "a")
         record = tracer.events[0]["provenance"]
-        assert set(record) == {"agent_version", "harness", "model_requested"}
-        assert record["model_requested"] == "m"
+        assert set(record) == {"agent_version", "harness"}
 
     def test_finish_writes_run_end_immediately(self):
         tracer = Tracer()
