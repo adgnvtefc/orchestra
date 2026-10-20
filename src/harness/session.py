@@ -6,7 +6,7 @@ compaction (later) will rewrite a session's history, while traces never change.
 
 On disk, one folder per session:
 
-    sessions/<id>/session.json      id, agent, agent_version, workspace, created: written once, never changed
+    sessions/<id>/session.json      id, agent, agent_version, workspace, environment, created: written once, never changed
     sessions/<id>/messages.jsonl    the conversation, one message per line, appended as it happens
     sessions/<id>/turn-001.jsonl    the trace of turn 1, turn-002.jsonl of turn 2, ...
     sessions/<id>/workspace/        where the agent works, unless the session was given another folder
@@ -65,6 +65,13 @@ class Session:
         return Path(self.meta["workspace"])
 
     @property
+    def environment_variables(self) -> dict[str, str]:
+        """The extra variables the session's commands run with, {workspace} filled in.
+        Empty without an environment."""
+        variables = (self.meta.get("environment") or {}).get("variables", {})
+        return {name: value.replace("{workspace}", str(self.workspace)) for name, value in variables.items()}
+
+    @property
     def next_turn(self) -> int:
         """One past the number of turn traces on disk, however those turns ended."""
         return len(list(self.dir.glob("turn-*.jsonl"))) + 1
@@ -75,13 +82,22 @@ class Session:
 
     @classmethod
     def create(
-        cls, root: Path, agent: str, system_prompt: str, agent_version: str, workspace: Path | None = None
+        cls,
+        root: Path,
+        agent: str,
+        system_prompt: str,
+        agent_version: str,
+        workspace: Path | None = None,
+        environment: dict | None = None,
     ) -> "Session":
         """Start a new session. The system prompt becomes message 0 and is fixed from here on:
         editing the agent file later doesn't change sessions that already exist.
 
         `workspace`: an existing folder to work in. None (the default) gives the session its
         own empty folder, sessions/<id>/workspace/, so runs never see each other's files.
+        `environment`: {"name", "version", "variables"} of the environment it's set up with,
+        recorded so a resumed session gets the same variables. The variables are stored
+        with "{workspace}" unfilled (see environment_variables). None means no environment.
         """
         session_id = new_session_id(agent)
         directory = root / session_id
@@ -94,6 +110,7 @@ class Session:
             "agent": agent,
             "agent_version": agent_version,  # what the session started with; each turn's trace has its own provenance
             "workspace": str(workspace.resolve()),
+            "environment": environment,
             "created": _now(),
         }
         session = cls(directory, meta, [])

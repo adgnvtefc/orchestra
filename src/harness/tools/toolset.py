@@ -21,15 +21,21 @@ class Toolset:
         `policy` decides whether each call may run; execute() checks it before every call.
         `context` (the workspace, ...) is passed to every tool as its first argument.
         """
-        unknown = [n for n in names if n not in REGISTRY]
-        if unknown:
-            raise ValueError(f"Unknown tool(s) {unknown}. Available tools: {', '.join(REGISTRY)}.")
+        self.check_names(names)
         # define an internal registry of all the tools we have
         self.tools = {n: REGISTRY[n] for n in names}
 
         # define a policy object for approval
         self.policy = policy
         self.context = context
+
+    @staticmethod
+    def check_names(names: list[str]) -> None:
+        """Raise if any name isn't a registered tool. Callable on its own, to validate a config
+        before building anything."""
+        unknown = [n for n in names if n not in REGISTRY]
+        if unknown:
+            raise ValueError(f"Unknown tool(s) {unknown}. Available tools: {', '.join(REGISTRY)}.")
 
     def schemas(self) -> list[dict]:
         """What the model sees: only this agent's tools."""

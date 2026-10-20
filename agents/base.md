@@ -6,5 +6,6 @@ tools:
   - read_file
   - write_file
   - bash
+environment: python-dev
 ---
 Hello! You are a helpful AI agent.

@@ -1,0 +1,10 @@
+description: Python 3.12 virtualenv with pytest
+setup:
+  - uv venv --quiet --python 3.12 .venv
+  - uv pip install --quiet --python .venv pytest
+env:
+  PATH: "{workspace}/.venv/bin"
+  VIRTUAL_ENV: "{workspace}/.venv"
+prompt: |
+  Your workspace has a Python 3.12 virtualenv in .venv with pytest installed.
+  `python`, `pip`, and `pytest` already point at it; use them directly.

@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-20, per-session workspaces via ToolContext; bash runs with an allowlisted environment
+**Last updated:** 2026-10-20, environments: workspaces set up from config before the first turn
 
 ---
 
@@ -26,6 +26,7 @@ flowchart TD
         direction LR
         agentmd["agents/base.md<br/>model, temperature, max_steps,<br/>tools, system prompt"]
         env[".env<br/>OMLX_API_KEY"]
+        envyaml["environments/python-dev.yaml<br/>setup commands, env vars, prompt"]
     end
 
     subgraph built["Built fresh for each run"]
@@ -46,7 +47,8 @@ flowchart TD
 
     user --> cli
     run -->|reads| inputs
-    inputs -->|"load_agent_config, make_client"| built
+    inputs -->|"check everything first, then build"| built
+    envyaml -.->|"provision: setup runs once,<br/>before turn 1"| ws
     built -->|handed to| agentloop
     agentloop <-->|"POST /v1/chat/completions"| omlx
     agentloop <-->|"every tool call"| toolset
@@ -79,7 +81,9 @@ sequenceDiagram
 
     You->>O: harness "write primes.py and run it"
     O->>O: load config, make client,<br/>build Policy + Toolset
-    O->>S: Session.create: new folder,<br/>system prompt = message 0
+    O->>O: check config, workspace, environment, tool names<br/>(any problem fails here, before anything is created)
+    O->>S: Session.create: new folder,<br/>system prompt (+ environment prompt) = message 0
+    O->>O: provision: run the environment's setup in the workspace<br/>(fails: the session is removed)
     O->>R: Tracer(session.trace_path(next turn))<br/>turn-001.jsonl exists from here on
     O->>A: run_agent(task, session, config, client, toolset, tracer)
     A->>R: start: run_start (task, config, tools, approver, provenance)
@@ -174,7 +178,37 @@ even if the model invents a call to it.
 
 ---
 
-## 5. What the model sees: the conversation grows
+## 5. Environments: how a workspace is set up
+
+An environment is a config file the **harness** applies before the agent starts, so setup is
+deterministic and costs the agent no steps. Setup commands run without approval: they come
+from a file you wrote (trusted), not from the model (untrusted).
+
+```yaml
+# environments/python-dev.yaml          (agents/base.md has: environment: python-dev)
+description: Python 3.12 virtualenv with pytest
+setup:                                  # run in the workspace, in order; any failure stops
+  - uv venv --quiet --python 3.12 .venv
+  - uv pip install --quiet --python .venv pytest
+env:                                    # added to the agent's commands; PATH is prepended
+  PATH: "{workspace}/.venv/bin"
+  VIRTUAL_ENV: "{workspace}/.venv"
+prompt: |                               # appended to the system prompt automatically
+  Your workspace has a Python 3.12 virtualenv in .venv with pytest installed. ...
+```
+
+- **Which one:** `--environment NAME` (or `none`) wins over `environment:` in the agent file.
+- **It belongs to the workspace:** provisioning writes `<workspace>/.harness/environment.json`
+  (name + version) last, after every command succeeded. Same version already there: skipped
+  (a shared workspace is set up once). A different version: refused, never set up over the top.
+- **Same environment for commands and setup:** both run with `ToolContext.command_env()`, the
+  allowlisted variables plus the environment's, so neither sees the harness's secrets.
+- **Provenance:** the resolved config records `environment: {name, version}`, where the version
+  hashes the spec *and* its template files, so changing an environment changes `agent_version`.
+
+---
+
+## 6. What the model sees: the conversation grows
 
 From a real run of `"Write primes.py that prints the first 10 primes, run it"`:
 
@@ -209,7 +243,7 @@ sessions/2026-10-20T14-13-59_base_8569/
 
 ---
 
-## 6. What a trace records
+## 7. What a trace records
 
 One JSONL file per turn, inside its session: `sessions/<id>/turn-001.jsonl` (gitignored).
 The format is defined in one place, `tracer.py`: the agent reports what happened
@@ -248,7 +282,7 @@ A hash *identifies* content; it doesn't store it.
 
 ---
 
-## 7. How the code is organized
+## 8. How the code is organized
 
 Arrows mean "imports". They only point one way: nothing imports the orchestrator,
 tools never import the machinery around them, and `policy.py` imports nothing at runtime.
@@ -258,6 +292,8 @@ flowchart TD
     orch["orchestrator.py<br/>control plane, CLI"] --> agent["agent.py<br/>the loop"]
     orch --> loader["config_loader.py<br/>reads agents/*.md"]
     orch --> sessionmod["session.py<br/>conversation on disk"]
+    orch --> envmod["environment.py<br/>load + provision"]
+    envmod --> base
     agent --> sessionmod
     orch --> policy["policy.py<br/>Policy, approvers"]
     orch --> tools_api["tools/__init__.py<br/>public API"]

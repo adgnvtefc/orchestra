@@ -7,7 +7,8 @@ import uuid
 from pathlib import Path
 
 from harness.tools.base import MAX_OUTPUT_CHARS
-from harness.tools.builtin.shell import ALLOWED_ENV, agent_env, bash
+from harness.tools.base import ALLOWED_ENV, agent_env
+from harness.tools.builtin.shell import bash
 
 
 class TestExecution:

@@ -151,7 +151,9 @@ class TestMain:
 
     def test_joins_words_into_one_task(self, run_calls, capsys):
         orchestrator.main(["list", "the", "files"])
-        assert run_calls == [{"task": "list the files", "agent_name": "base", "unattended": False, "workspace": None}]
+        assert run_calls == [
+            {"task": "list the files", "agent_name": "base", "unattended": False, "workspace": None, "environment": None}
+        ]
         assert capsys.readouterr().out.strip() == "printed answer"
 
     def test_quoted_task(self, run_calls):
@@ -168,7 +170,9 @@ class TestMain:
 
     def test_flags_after_task(self, run_calls):
         orchestrator.main(["do", "it", "--unattended", "--agent", "reader"])
-        assert run_calls == [{"task": "do it", "agent_name": "reader", "unattended": True, "workspace": None}]
+        assert run_calls == [
+            {"task": "do it", "agent_name": "reader", "unattended": True, "workspace": None, "environment": None}
+        ]
 
     def test_workspace_flag(self, run_calls, tmp_path):
         orchestrator.main(["--workspace", str(tmp_path), "hi"])
@@ -177,6 +181,10 @@ class TestMain:
     def test_workspace_flag_expands_home(self, run_calls):
         orchestrator.main(["--workspace", "~", "hi"])
         assert run_calls[0]["workspace"] == Path.home()
+
+    def test_environment_flag(self, run_calls):
+        orchestrator.main(["--environment", "none", "hi"])
+        assert run_calls[0]["environment"] == "none"
 
     def test_unknown_agent_lists_real_ones(self, run_calls, capsys):
         with pytest.raises(SystemExit) as exit_info:
@@ -356,3 +364,100 @@ class TestWorkspaces:
         from harness.provenance import agent_version
         base = {"model": "m", "system_prompt": "p"}
         assert agent_version(base) != agent_version({**base, "workspace": str(tmp_path)})
+
+
+class TestEnvironments:
+    """A session's workspace is set up from its environment before the first turn."""
+
+    @pytest.fixture
+    def setup_env(self, agents_dir, tmp_path, monkeypatch):
+        """Write environments/greet.yaml and an agent using it; the fake model runs `echo $GREETING`."""
+        from tests.fakes import call
+
+        envs = tmp_path / "environments"
+        envs.mkdir()
+        monkeypatch.setattr(orchestrator, "ENVIRONMENTS_DIR", envs)
+        (envs / "greet.yaml").write_text(
+            "setup:\n  - echo built > made.txt\nenv:\n  GREETING: hello\nprompt: |\n  You have made.txt.\n"
+        )
+        (envs / "broken.yaml").write_text("setup:\n  - exit 3\n")
+
+        def install(environment_line="environment: greet\n", replies=None):
+            (agents_dir / "base.md").write_text(
+                f"---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - bash\n{environment_line}---\nBase prompt.\n"
+            )
+            replies = replies or [reply(tool_calls=[call("bash", {"command": 'echo "[$GREETING]"'})]), reply("done")]
+            client = FakeClient(replies)
+            monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+            return client
+
+        install.envs = envs
+        return install
+
+    def only_session(self, sessions_dir):
+        (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
+        return session
+
+    def test_workspace_is_set_up_before_the_first_turn(self, setup_env, sessions_dir, approve):
+        setup_env()
+        orchestrator.run("t")
+        assert (self.only_session(sessions_dir) / "workspace" / "made.txt").read_text() == "built\n"
+
+    def test_agent_commands_see_the_environment(self, setup_env, approve):
+        client = setup_env()
+        orchestrator.run("t")
+        tool_result = [m for m in client.requests[1]["messages"] if m["role"] == "tool"][0]["content"]
+        assert tool_result.startswith("[hello]")
+
+    def test_prompt_is_added_to_the_system_prompt(self, setup_env, approve):
+        client = setup_env()
+        orchestrator.run("t")
+        assert client.requests[0]["messages"][0]["content"] == "Base prompt.\n\nYou have made.txt."
+
+    def test_recorded_in_session_and_trace(self, setup_env, sessions_dir, approve):
+        setup_env()
+        orchestrator.run("t")
+        session = self.only_session(sessions_dir)
+        meta = json.loads((session / "session.json").read_text())
+        assert meta["environment"]["name"] == "greet"
+        assert meta["environment"]["variables"] == {"GREETING": "hello"}
+        start = json.loads((session / "turn-001.jsonl").read_text().splitlines()[0])
+        assert start["config"]["environment"] == {"name": "greet", "version": meta["environment"]["version"]}
+
+    def test_environment_content_changes_the_agent_version(self, setup_env, sessions_dir, approve):
+        setup_env()
+        orchestrator.run("t")
+        (setup_env.envs / "greet.yaml").write_text("env:\n  GREETING: changed\n")
+        setup_env()
+        orchestrator.run("t")
+        versions = {json.loads((s / "session.json").read_text())["agent_version"] for s in sessions_dir.iterdir()}
+        assert len(versions) == 2  # same agent file, different environment content: a different agent
+
+    def test_cli_none_overrides_agent_file(self, setup_env, sessions_dir, approve):
+        client = setup_env()
+        orchestrator.run("t", environment="none")
+        assert not (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
+        assert client.requests[0]["messages"][0]["content"] == "Base prompt."
+
+    def test_cli_names_an_environment(self, setup_env, sessions_dir, approve):
+        setup_env(environment_line="")
+        orchestrator.run("t", environment="greet")
+        assert (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
+
+    def test_unknown_environment_fails_before_anything_is_created(self, setup_env, sessions_dir):
+        setup_env(environment_line="environment: nope\n")
+        with pytest.raises(Exception, match="no environment 'nope'"):
+            orchestrator.run("t")
+        assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
+
+    def test_failed_setup_leaves_no_session(self, setup_env, sessions_dir):
+        setup_env(environment_line="environment: broken\n")
+        with pytest.raises(Exception, match="exit 3"):
+            orchestrator.run("t")
+        assert not any(sessions_dir.iterdir())
+
+    def test_tool_typo_fails_before_anything_is_created(self, setup_env, agents_dir, sessions_dir):
+        (agents_dir / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - bsh\n---\nP\n")
+        with pytest.raises(ValueError, match="bsh"):
+            orchestrator.run("t")
+        assert not sessions_dir.exists() or not any(sessions_dir.iterdir())

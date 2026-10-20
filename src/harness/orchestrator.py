@@ -6,6 +6,7 @@ is imported here; nothing imports the orchestrator.
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from openai import OpenAI
 
 from harness.agent import run_agent
 from harness.config_loader import load_agent_config
+from harness.environment import Environment, load_environment, provision
 from harness.policy import Policy, deny_all, terminal_approver
 from harness.provenance import agent_version
 from harness.session import Session
@@ -24,6 +26,7 @@ from harness.tracer import Tracer
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_DIR = PROJECT_ROOT / "sessions"
+ENVIRONMENTS_DIR = PROJECT_ROOT / "environments"
 
 
 def make_client() -> OpenAI:
@@ -42,22 +45,57 @@ def make_client() -> OpenAI:
     )
 
 
-def run(task: str, agent_name: str = "base", unattended: bool = False, workspace: Path | None = None) -> str:
+def run(
+    task: str,
+    agent_name: str = "base",
+    unattended: bool = False,
+    workspace: Path | None = None,
+    environment: str | None = None,
+) -> str:
     """Load the named agent's config, build what it needs, and run `task` as turn 1 of a new session.
 
     `unattended`: nobody is at the terminal, so every "ask" is answered no.
     `workspace`: a folder to work in, overriding the agent file's `workspace:`. With
     neither, the session gets its own fresh folder.
+    `environment`: an environment name (or "none"), overriding the agent file's `environment:`.
     """
+    # 1. Check everything first: a typo should fail before any folder is created.
     config = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
-    workspace = resolve_workspace(workspace, config.get("workspace"))  # checked before anything is created
+    workspace = resolve_workspace(workspace, config.get("workspace"))
+    env = resolve_environment(environment, config.get("environment"))
+    Toolset.check_names(config.get("tools", []))  # no `tools:` key means no tools: access is opt-in
     client = make_client()
+
+    # The resolved config is what the run actually used: the environment's name *and*
+    # version, so agent_version changes whenever the environment's content does.
+    config["environment"] = {"name": env.name, "version": env.version} if env else None
+    system_prompt = config["system_prompt"] + (f"\n\n{env.prompt}" if env and env.prompt else "")
+
+    # 2. Create the session (the system prompt is pinned here) and set its workspace up.
+    session = Session.create(
+        SESSIONS_DIR, agent_name, system_prompt, agent_version(config), workspace,
+        environment={**config["environment"], "variables": env.env} if env else None,  # {workspace} unfilled
+    )
+    if env:
+        try:
+            provision(env, session.workspace)
+        except Exception:
+            shutil.rmtree(session.dir)  # a session that never got set up has nothing worth keeping
+            raise
+
+    # 3. Build what the turn needs and run it.
     policy = Policy(approver=deny_all if unattended else terminal_approver)
-    # The system prompt is pinned into the session here; later turns reuse it, not the file.
-    session = Session.create(SESSIONS_DIR, agent_name, config["system_prompt"], agent_version(config), workspace)
-    context = ToolContext(workspace=session.workspace)
-    toolset = Toolset(config.get("tools", []), policy, context)  # no `tools:` key means no tools: access is opt-in
+    context = ToolContext(workspace=session.workspace, env=session.environment_variables)
+    toolset = Toolset(config.get("tools", []), policy, context)
     return run_turn(task, session, config, client, toolset)
+
+
+def resolve_environment(from_cli: str | None, from_config: str | None) -> Environment | None:
+    """Which environment: the command line wins, then the agent file. "none" (or neither) means none."""
+    name = from_cli if from_cli is not None else from_config
+    if name is None or name == "none":
+        return None
+    return load_environment(ENVIRONMENTS_DIR, name, PROJECT_ROOT)
 
 
 def resolve_workspace(from_cli: Path | None, from_config: str | None) -> Path | None:
@@ -111,10 +149,14 @@ def main(argv: list[str] | None = None) -> None:
         "--workspace",
         help="an existing folder for the agent to work in (default: a fresh folder inside the session)",
     )
+    parser.add_argument(
+        "--environment",
+        help="environment from environments/ to set the workspace up with, or 'none' (default: the agent file's)",
+    )
     args = parser.parse_args(argv)
 
     task = " ".join(args.task).strip()
     if not task:
         parser.error("the task is empty")  # prints usage and exits, like any other bad argument
     workspace = Path(args.workspace).expanduser() if args.workspace else None
-    print(run(task, agent_name=args.agent, unattended=args.unattended, workspace=workspace))
+    print(run(task, agent_name=args.agent, unattended=args.unattended, workspace=workspace, environment=args.environment))

@@ -54,7 +54,8 @@ class TestCreate:
         assert meta["agent"] == session.agent == "base"
         assert meta["agent_version"] == "abc123def456"
         assert "created" in meta
-        assert set(meta) == {"id", "agent", "agent_version", "workspace", "created"}  # nothing that changes later
+        assert set(meta) == {"id", "agent", "agent_version", "workspace", "environment", "created"}  # nothing that changes later
+        assert meta["environment"] is None
 
     def test_system_prompt_is_message_zero(self, session):
         assert session.messages == ({"role": "system", "content": "You are a test agent."},)
@@ -93,6 +94,22 @@ class TestWorkspace:
         session = Session.create(root, "base", "p", "v", workspace=project)
         assert json.loads((session.dir / SESSION_FILE).read_text())["workspace"] == str(project.resolve())
         assert Session.load(root, session.id).workspace == project.resolve()
+
+
+class TestEnvironmentRecord:
+    def test_recorded_with_workspace_unfilled(self, root):
+        env = {"name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"}}
+        session = Session.create(root, "base", "p", "v", environment=env)
+        assert json.loads((session.dir / SESSION_FILE).read_text())["environment"] == env
+
+    def test_variables_filled_in_on_read(self, root):
+        env = {"name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"}}
+        session = Session.create(root, "base", "p", "v", environment=env)
+        assert session.environment_variables == {"PATH": f"{session.workspace}/.venv/bin", "X": "1"}
+        assert Session.load(root, session.id).environment_variables == session.environment_variables
+
+    def test_no_environment_no_variables(self, session):
+        assert session.environment_variables == {}
 
 
 class TestAppend:
