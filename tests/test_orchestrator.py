@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from harness import orchestrator
+from harness import config_loader, orchestrator
 from harness.policy import deny_all, terminal_approver
 from harness.tools import Toolset
 from tests.fakes import FakeClient, reply
@@ -52,7 +52,7 @@ def agents_dir(tmp_path, monkeypatch):
     """A temp agents/ folder the orchestrator reads from, plus a FakeClient it builds."""
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(orchestrator, "AGENTS_DIR", directory)
+    monkeypatch.setattr(config_loader, "AGENTS_DIR", directory)
     return directory
 
 
@@ -341,15 +341,15 @@ class TestWorkspaces:
         assert not (from_config / "marker.txt").exists()
 
     def test_agent_file_relative_path_is_from_project_root(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(orchestrator, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(config_loader, "PROJECT_ROOT", tmp_path)
         (tmp_path / "sub").mkdir()
-        assert orchestrator.resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
+        assert config_loader.resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
 
     def test_agent_file_home_path(self):
-        assert orchestrator.resolve_workspace(None, "~") == Path.home().resolve()
+        assert config_loader.resolve_workspace(None, "~") == Path.home().resolve()
 
     def test_none_means_fresh(self):
-        assert orchestrator.resolve_workspace(None, None) is None
+        assert config_loader.resolve_workspace(None, None) is None
 
     @pytest.mark.parametrize("source", ["cli", "config"])
     def test_missing_folder_fails_before_anything_is_created(self, writes_a_file, sessions_dir, tmp_path, source):
@@ -376,7 +376,7 @@ class TestEnvironments:
 
         envs = tmp_path / "environments"
         envs.mkdir()
-        monkeypatch.setattr(orchestrator, "ENVIRONMENTS_DIR", envs)
+        monkeypatch.setattr(config_loader, "ENVIRONMENTS_DIR", envs)
         (envs / "greet.yaml").write_text(
             "setup:\n  - echo built > made.txt\nenv:\n  GREETING: hello\nprompt: |\n  You have made.txt.\n"
         )

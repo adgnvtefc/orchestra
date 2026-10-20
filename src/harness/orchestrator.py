@@ -14,19 +14,17 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from harness.agent import run_agent
-from harness.config_loader import load_agent_config
-from harness.environment import Environment, load_environment, provision
+from harness import config_loader
+from harness.config_loader import resolve_run_config
+from harness.environment import provision
 from harness.policy import Policy, deny_all, terminal_approver
 from harness.provenance import agent_version
 from harness.session import Session
 from harness.tools import ToolContext, Toolset
 from harness.tracer import Tracer
 
-# Located relative to this file, so `uv run harness` works from any directory.
-AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SESSIONS_DIR = PROJECT_ROOT / "sessions"
-ENVIRONMENTS_DIR = PROJECT_ROOT / "environments"
+# Where sessions (conversations, traces, default workspaces) are stored.
+SESSIONS_DIR = config_loader.PROJECT_ROOT / "sessions"
 
 
 def make_client() -> OpenAI:
@@ -59,22 +57,15 @@ def run(
     neither, the session gets its own fresh folder.
     `environment`: an environment name (or "none"), overriding the agent file's `environment:`.
     """
-    # 1. Check everything first: a typo should fail before any folder is created.
-    config = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
-    workspace = resolve_workspace(workspace, config.get("workspace"))
-    env = resolve_environment(environment, config.get("environment"))
-    Toolset.check_names(config.get("tools", []))  # no `tools:` key means no tools: access is opt-in
+    # 1. Resolve and check all config first: a typo should fail before any folder is created.
+    rc = resolve_run_config(agent_name, workspace=workspace, environment=environment)
     client = make_client()
 
-    # The resolved config is what the run actually used: the environment's name *and*
-    # version, so agent_version changes whenever the environment's content does.
-    config["environment"] = {"name": env.name, "version": env.version} if env else None
-    system_prompt = config["system_prompt"] + (f"\n\n{env.prompt}" if env and env.prompt else "")
-
     # 2. Create the session (the system prompt is pinned here) and set its workspace up.
+    env = rc.environment
     session = Session.create(
-        SESSIONS_DIR, agent_name, system_prompt, agent_version(config), workspace,
-        environment={**config["environment"], "variables": env.env} if env else None,  # {workspace} unfilled
+        SESSIONS_DIR, agent_name, rc.system_prompt, agent_version(rc.agent), rc.workspace,
+        environment={**rc.agent["environment"], "variables": env.env} if env else None,  # {workspace} unfilled
     )
     if env:
         try:
@@ -86,34 +77,8 @@ def run(
     # 3. Build what the turn needs and run it.
     policy = Policy(approver=deny_all if unattended else terminal_approver)
     context = ToolContext(workspace=session.workspace, env=session.environment_variables)
-    toolset = Toolset(config.get("tools", []), policy, context)
-    return run_turn(task, session, config, client, toolset)
-
-
-def resolve_environment(from_cli: str | None, from_config: str | None) -> Environment | None:
-    """Which environment: the command line wins, then the agent file. "none" (or neither) means none."""
-    name = from_cli if from_cli is not None else from_config
-    if name is None or name == "none":
-        return None
-    return load_environment(ENVIRONMENTS_DIR, name, PROJECT_ROOT)
-
-
-def resolve_workspace(from_cli: Path | None, from_config: str | None) -> Path | None:
-    """Which folder to work in: the command line wins, then the agent file; None means a fresh one.
-
-    A path in an agent file may use ~ and is relative to the project root, so it means
-    the same thing wherever you run from. The folder must already exist: a typo should
-    fail here, not quietly create a new empty folder somewhere.
-    """
-    if from_cli is not None:
-        path = from_cli
-    elif from_config is not None:
-        path = PROJECT_ROOT / Path(from_config).expanduser()  # an absolute path replaces PROJECT_ROOT
-    else:
-        return None
-    if not path.is_dir():
-        raise ValueError(f"workspace {str(path)!r} is not an existing folder")
-    return path.resolve()
+    toolset = Toolset(rc.agent.get("tools", []), policy, context)
+    return run_turn(task, session, rc.agent, client, toolset)
 
 
 def run_turn(task: str, session: Session, config: dict, client: OpenAI, toolset: Toolset) -> str:
@@ -132,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
 
     `argv` defaults to the real command line; tests pass their own list.
     """
-    agents = sorted(path.stem for path in AGENTS_DIR.glob("*.md"))
+    agents = sorted(path.stem for path in config_loader.AGENTS_DIR.glob("*.md"))
 
     # this block is ai generated and i am trusting it works
     parser = argparse.ArgumentParser(prog="harness", description="Run an agent on a task.")
