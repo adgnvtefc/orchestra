@@ -4,7 +4,7 @@ import pytest
 
 from harness import config, orchestrator
 from harness.interfaces import cli
-from harness.policy import deny_all
+from harness.policy import approve_all, deny_all
 from harness.sandbox import Unsandboxed, default_sandbox
 from tests.fakes import FakeClient, reply
 
@@ -135,6 +135,28 @@ class TestMain:
     def test_unattended_means_deny_all(self, run_calls):
         cli.main(["--unattended", "hi"])
         assert run_calls[0]["approver"] is deny_all
+
+    def test_yes_means_approve_all(self, run_calls):
+        cli.main(["--yes", "hi"])
+        assert run_calls[0]["approver"] is approve_all
+
+    def test_yes_with_no_sandbox_is_refused(self, run_calls, capsys):
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main(["--yes", "--no-sandbox", "hi"])
+        assert exit_info.value.code == 2
+        assert "needs the sandbox" in capsys.readouterr().err
+        assert run_calls == []  # refused before anything was created
+
+    def test_yes_where_no_sandbox_is_available_is_refused(self, run_calls, monkeypatch, capsys):
+        monkeypatch.setattr(cli, "default_sandbox", Unsandboxed)  # e.g. not macOS
+        with pytest.raises(SystemExit):
+            cli.main(["--yes", "hi"])
+        assert "needs the sandbox" in capsys.readouterr().err
+
+    def test_yes_and_unattended_are_exclusive(self, run_calls, capsys):
+        with pytest.raises(SystemExit):
+            cli.main(["--yes", "--unattended", "hi"])
+        assert "not allowed with argument" in capsys.readouterr().err
 
     def test_sandboxed_by_default(self, run_calls):
         cli.main(["hi"])

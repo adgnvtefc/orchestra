@@ -16,7 +16,7 @@ from openai import OpenAI
 from harness.agent import run_agent
 from harness.config import RunConfig, resolve_agent, resolve_run_config
 from harness.environment import provision
-from harness.policy import Approver, Policy, deny_all
+from harness.policy import Approver, Policy, deny_all, require_sandbox_for_auto_approval
 from harness.provenance import agent_version
 from harness.sandbox import Seatbelt, Unsandboxed, default_sandbox
 from harness.providers import make_client
@@ -76,14 +76,17 @@ def new_conversation(
 
     `approver`: how "ask" tools get answered. The default, deny_all, is the safe one: an
     interface that can ask a human passes its own (interfaces/cli.py passes terminal_approver).
+    approve_all is refused unless sandboxed.
     `sandbox`: how bash commands are confined; None means default_sandbox() (Seatbelt on macOS).
     `workspace` / `environment`: override the agent file's; see config.
     """
-    # Resolve and check all config first: a typo should fail before any folder is created.
+    # Check everything first: a bad combination or a typo should fail before any folder is created.
+    sandbox = sandbox or default_sandbox()
+    require_sandbox_for_auto_approval(approver, sandbox)
     rc = resolve_run_config(agent_name, workspace=workspace, environment=environment)
     client = make_client()
     session = start_session(rc)
-    toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox or default_sandbox())
+    toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox)
     return Conversation(session, rc.agent, client, toolset)
 
 
@@ -96,11 +99,13 @@ def resume_conversation(
     model, temperature, max_steps, and tools come from the agent file as it is *now*,
     and each turn's trace records exactly what that turn used.
     """
+    sandbox = sandbox or default_sandbox()
+    require_sandbox_for_auto_approval(approver, sandbox)
     session = Session.load(SESSIONS_DIR, session_id)  # also repairs an interrupted history
     agent = resolve_agent(session.agent)
     agent["environment"] = session.environment  # what the workspace was set up with, not today's file
     client = make_client()
-    toolset = build_toolset(session, agent.get("tools", []), approver, sandbox or default_sandbox())
+    toolset = build_toolset(session, agent.get("tools", []), approver, sandbox)
     return Conversation(session, agent, client, toolset)
 
 

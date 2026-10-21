@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-21, bash runs in a macOS sandbox; sessions live in ~/.orchestra/sessions
+**Last updated:** 2026-10-21, --yes: auto-approval, allowed only inside the sandbox
 
 ---
 
@@ -159,6 +159,7 @@ flowchart TD
     approver -->|"terminal: you typed y"| runfn
     approver -->|"terminal: anything else"| r1["The user declined this call.<br/>Try a different approach."]
     approver -->|"deny_all (--unattended)<br/>or no terminal"| r2["Unavailable in this run.<br/>Don't retry; say what you couldn't do."]
+    approver -->|"approve_all (--yes,<br/>sandbox required)"| runfn
     runfn["tool.fn(**arguments)"] --> ok{"raised?"}
     ok -->|no| result["result as a string"]
     ok -->|TypeError| e4["Error: bad arguments"]
@@ -238,6 +239,11 @@ operating system enforces them. (`--no-sandbox` runs commands unconfined.)
 | **Network** | local sockets | the internet |
 
 Temp files go to `<workspace>/.tmp` (`TMPDIR`). Each run's trace records `sandbox` in `run_start`.
+
+**`--yes` (`approve_all`) is only allowed with the sandbox on**: with nobody approving, the
+sandbox is the safety net. `require_sandbox_for_auto_approval()` in `policy.py` is the one
+place that rule lives; the CLI calls it for a clear error, and the orchestrator calls it
+again before creating anything, so code that skips the CLI can't bypass it.
 `read_file`/`write_file` don't use the sandbox (they run inside the harness); `_resolve()`'s
 path check confines them instead.
 
@@ -400,6 +406,5 @@ What's planned, in rough order. Each becomes a diagram change when it lands.
 
 - **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
-- **`--yes`:** auto-approve tool calls, allowed only when sandboxed (unlocks unattended runs and evals).
 - **Context management:** compaction when the conversation nears the 32k window.
 - **Provider adapters:** oMLX and native Anthropic behind one interface.

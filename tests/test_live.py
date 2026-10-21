@@ -11,10 +11,10 @@ import pytest
 from dotenv import load_dotenv
 
 from harness import orchestrator
+from harness.policy import approve_all
 
 pytestmark = pytest.mark.live
 
-YES = lambda name, arguments: None  # approve every tool call: runs happen in a throwaway session workspace
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -34,19 +34,19 @@ def require_server():
 def test_lists_empty_workspace():
     # environment="none": base's python-dev environment would put .venv/ and .harness/ in the
     # workspace, and an agent that runs `ls -la` would rightly say it isn't empty.
-    answer = orchestrator.run("What files are in the workspace? Answer briefly.", approver=YES, environment="none")
+    answer = orchestrator.run("What files are in the workspace? Answer briefly.", approver=approve_all, environment="none")
     assert "empty" in answer.lower() or "no files" in answer.lower(), f"model's answer: {answer!r}"
 
 
 def test_writes_and_runs_a_script(sessions_dir):
-    answer = orchestrator.run("Write primes.py that prints the first 10 primes, run it, and tell me the output", approver=YES)
+    answer = orchestrator.run("Write primes.py that prints the first 10 primes, run it, and tell me the output", approver=approve_all)
     (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
     assert (session / "workspace" / "primes.py").is_file()
     assert "29" in answer  # the 10th prime
 
 
 def test_recovers_from_missing_file():
-    answer = orchestrator.run("Read notes.txt and summarize it", approver=YES)
+    answer = orchestrator.run("Read notes.txt and summarize it", approver=approve_all)
     # The model may word it many ways; what matters is it reports the file as missing, not invented.
     missing = ("not found", "doesn't exist", "does not exist", "couldn't find", "could not find",
                "no such", "isn't", "is not", "wasn't", "no file", "not exist", "missing", "empty")

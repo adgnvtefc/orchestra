@@ -362,6 +362,22 @@ class TestConversation:
         start = __import__("json").loads(conv.session.trace_path(1).read_text().splitlines()[0])
         assert start["sandbox"] == default_sandbox().name  # recorded in the trace
 
+    @pytest.mark.parametrize("start", ["new", "resume"])
+    def test_auto_approval_without_sandbox_is_refused_up_front(self, agents_dir, sessions_dir, monkeypatch, start):
+        from harness.policy import approve_all
+        from harness.sandbox import Unsandboxed
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        existing = orchestrator.new_conversation("base").session.id if start == "resume" else None
+        before = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
+        with pytest.raises(ValueError, match="needs the sandbox"):
+            if start == "new":
+                orchestrator.new_conversation("base", approver=approve_all, sandbox=Unsandboxed())
+            else:
+                orchestrator.resume_conversation(existing, approver=approve_all, sandbox=Unsandboxed())
+        after = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
+        assert after == before  # nothing was created
+
     def test_sandbox_is_passed_through(self, agents_dir, monkeypatch):
         from harness.sandbox import Unsandboxed
         write_agent(agents_dir, "base")

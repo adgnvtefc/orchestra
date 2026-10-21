@@ -3,7 +3,8 @@
 import pytest
 
 from harness.interfaces.cli import terminal_approver
-from harness.policy import Policy, deny_all
+from harness.policy import Policy, approve_all, deny_all, require_sandbox_for_auto_approval
+from harness.sandbox import Unsandboxed
 from harness.tools import Tool
 
 
@@ -53,6 +54,30 @@ class TestName:
 
     def test_explicit_name_for_an_anonymous_approver(self):
         assert Policy(lambda name, args: None, name="auto_approve").name == "auto_approve"
+
+
+class TestApproveAll:
+    def test_always_approves(self):
+        assert approve_all("bash", {"command": "rm -rf /"}) is None
+
+    def test_name_in_traces(self):
+        assert Policy(approve_all).name == "approve_all"
+
+
+class TestAutoApprovalNeedsASandbox:
+    class Sandboxed:
+        name = "seatbelt"
+
+    def test_refused_without_a_sandbox(self):
+        with pytest.raises(ValueError, match="needs the sandbox"):
+            require_sandbox_for_auto_approval(approve_all, Unsandboxed())
+
+    def test_allowed_with_a_sandbox(self):
+        require_sandbox_for_auto_approval(approve_all, self.Sandboxed())  # no error
+
+    @pytest.mark.parametrize("approver", [deny_all, terminal_approver])
+    def test_other_approvers_never_need_one(self, approver):
+        require_sandbox_for_auto_approval(approver, Unsandboxed())  # no error
 
 
 class TestDenyAll:

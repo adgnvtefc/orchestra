@@ -36,6 +36,23 @@ def deny_all(name: str, arguments: dict) -> str | None:
     )
 
 
+def approve_all(name: str, arguments: dict) -> str | None:
+    """--yes: approve every call without asking. Only allowed with a sandbox (see
+    require_sandbox_for_auto_approval): the sandbox, not a person, is then the safety net."""
+    return None
+
+
+def require_sandbox_for_auto_approval(approver: Approver, sandbox) -> None:
+    """Refuse approve_all without a sandbox: nothing would stand between the model and your machine.
+
+    The one place this rule lives; the CLI calls it for a friendly error before anything
+    happens, and the orchestrator calls it again so code that skips the CLI can't bypass it.
+    (`sandbox` is anything with a .name, "none" meaning unsandboxed: no import needed here.)
+    """
+    if approver is approve_all and sandbox.name == "none":
+        raise ValueError("auto-approval (--yes) needs the sandbox; it can't be combined with no sandbox")
+
+
 class Policy:
     def __init__(self, approver: Approver, name: str | None = None):
         """`name` labels the policy in traces; it defaults to the approver function's name

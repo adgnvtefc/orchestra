@@ -15,7 +15,7 @@ from pathlib import Path
 
 from harness.config import list_agents
 from harness.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
-from harness.policy import deny_all
+from harness.policy import approve_all, deny_all, require_sandbox_for_auto_approval
 from harness.sandbox import Unsandboxed, default_sandbox
 
 
@@ -111,10 +111,17 @@ def main(argv: list[str] | None = None) -> None:
     new_session = argparse.ArgumentParser(add_help=False)
     # choices: a typo'd agent name fails right here, with the list of real ones
     new_session.add_argument("--agent", choices=list_agents(), help="which agent in agents/ to run (default: base)")
-    new_session.add_argument(
+    # How "ask" tools get answered: a y/N prompt by default, or one of these (not both).
+    approval = new_session.add_mutually_exclusive_group()
+    approval.add_argument(
         "--unattended",
         action="store_true",  # a flag: present means True, absent means False
-        help="never prompt; tools that would ask for approval are declined (for scripts and evals)",
+        help="never prompt; tools that would ask for approval are declined",
+    )
+    approval.add_argument(
+        "--yes",
+        action="store_true",
+        help="never prompt; approve every tool call (only with the sandbox: it's what keeps you safe then)",
     )
     new_session.add_argument(
         "--no-sandbox",
@@ -141,8 +148,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     # The terminal decides how to ask a human; the orchestrator just uses whatever it's given.
-    approver = deny_all if args.unattended else terminal_approver
+    approver = deny_all if args.unattended else approve_all if args.yes else terminal_approver
     sandbox = Unsandboxed() if args.no_sandbox else default_sandbox()
+    try:
+        require_sandbox_for_auto_approval(approver, sandbox)  # fail here, before anything is created
+    except ValueError as e:
+        (run_cmd if args.command == "run" else chat_cmd).error(str(e))
     workspace = Path(args.workspace).expanduser() if args.workspace else None
     new = dict(approver=approver, sandbox=sandbox, workspace=workspace, environment=args.environment)
 
