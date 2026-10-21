@@ -16,6 +16,7 @@ still leaves a trace up to the moment it died. Events are also kept in memory
 import json
 import time
 from datetime import datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,9 +27,15 @@ if TYPE_CHECKING:  # only for type hints; never imported at runtime
 
 
 class Tracer:
-    def __init__(self, path: Path | None = None):
-        """Write events to `path` (parent folders are created). With no path, keep them in memory only."""
+    def __init__(self, path: Path | None = None, listeners: list[Callable[[dict], None]] | None = None):
+        """Write events to `path` (parent folders are created). With no path, keep them in memory only.
+
+        `listeners` are called with each event as it's recorded: how an interface shows
+        what's happening (the terminal prints tool calls; a web UI could stream them),
+        without the agent loop knowing any interface exists.
+        """
         self.path = path
+        self.listeners = listeners or []
         self.events: list[dict] = []
         self.steps = 0  # model responses received so far; run_end reports it
         self.tool_calls = 0  # tool calls made so far; run_end reports it
@@ -49,6 +56,8 @@ class Tracer:
             # default=str: anything JSON can't encode is written as its str(), never a crash
             self._file.write(json.dumps(record, default=str) + "\n")
             self._file.flush()
+        for listener in self.listeners:  # after it's safely on disk
+            listener(record)
 
     # ---- The trace format: one method per kind of event ----
 

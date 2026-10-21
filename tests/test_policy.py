@@ -2,7 +2,8 @@
 
 import pytest
 
-from harness.policy import Policy, deny_all, terminal_approver
+from harness.interfaces.cli import terminal_approver
+from harness.policy import Policy, deny_all
 from harness.tools import Tool
 
 
@@ -64,37 +65,3 @@ class TestDenyAll:
         assert message.startswith("bash is unavailable in this run")
         assert "nobody is available" in message
         assert "Don't retry" in message
-
-
-class TestTerminalApprover:
-    @pytest.mark.parametrize("answer", ["y", "Y", " y ", "y\n"])
-    def test_y_approves(self, answer_prompt, answer):
-        answer_prompt(answer)
-        assert terminal_approver("bash", {"command": "ls"}) is None
-
-    @pytest.mark.parametrize("answer", ["", "n", "N", "no", "yes", "yy", "sure"])
-    def test_anything_else_declines(self, answer_prompt, answer):
-        # Only an explicit "y" approves. Even "yes" declines: strict beats surprising.
-        answer_prompt(answer)
-        assert terminal_approver("bash", {"command": "ls"}) == (
-            "The user declined this bash call. Try a different approach or ask the user."
-        )
-
-    def test_no_terminal_declines(self, answer_prompt):
-        # No terminal is the same situation as unattended, so it gets the same message.
-        answer_prompt(EOFError)
-        assert terminal_approver("bash", {"command": "ls"}) == deny_all("bash", {"command": "ls"})
-
-    def test_shows_tool_and_arguments_before_asking(self, approve, capsys):
-        terminal_approver("bash", {"command": "echo visible-command", "timeout": 60})
-        out = capsys.readouterr().out
-        assert "agent wants to run bash" in out
-        assert "command: echo visible-command" in out
-        assert "timeout: 60" in out
-        assert approve == ["  allow? [y/N] "]
-
-    def test_long_argument_values_are_shortened(self, approve, capsys):
-        terminal_approver("write_file", {"content": "x" * 5000})
-        out = capsys.readouterr().out
-        assert "x" * 300 + "..." in out
-        assert "x" * 301 not in out

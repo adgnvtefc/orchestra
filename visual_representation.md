@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-20, `harness chat` and `--resume`: many turns per session
+**Last updated:** 2026-10-21, the agent loop prints nothing; the interface shows steps by listening to trace events
 
 ---
 
@@ -17,10 +17,17 @@ one checkpoint.
 flowchart TD
     user(["You<br/>harness 'task'  (one turn)<br/>harness chat  /  chat --resume ID"])
 
-    subgraph control["Control plane: orchestrator.py"]
+    subgraph iface["Interface: interfaces/cli.py (all terminal input/output)"]
         direction LR
-        cli["main()<br/>run / chat commands"] --> run["run() or chat()<br/>start or resume a session,<br/>then run_turn() per turn"]
+        cli["main(): run / chat commands<br/>terminal_approver: the y/N prompt"]
     end
+
+    subgraph control["Control plane: orchestrator.py (no terminal I/O)"]
+        direction LR
+        run["new_conversation() / resume_conversation()<br/>then Conversation.turn() per turn"]
+    end
+
+    cli -->|"approver + options"| run
 
     subgraph inputs["Config files"]
         direction LR
@@ -33,7 +40,7 @@ flowchart TD
         direction LR
         cfg["config dict"]
         client["OpenAI client"]
-        policy["Policy<br/>terminal_approver, or<br/>deny_all if --unattended"]
+        policy["Policy<br/>uses the approver the<br/>interface handed in"]
         toolset["Toolset<br/>only the tools this agent lists"]
         session["Session<br/>owns the conversation;<br/>system prompt pinned at creation"]
         tracer["Tracer<br/>one file per turn"]
@@ -57,6 +64,7 @@ flowchart TD
     agentloop -->|"every step: events"| tracer
     session --> sessions
     tracer --> sessions
+    tracer -.->|"each event, as it happens<br/>(listener: show_step)"| cli
 ```
 
 ---
@@ -75,6 +83,7 @@ when the model replies without asking for a tool, or when `max_steps` runs out.
 sequenceDiagram
     autonumber
     actor You
+    participant C as interfaces/cli.py
     participant O as Orchestrator
     participant A as Agent loop
     participant M as Model (oMLX)
@@ -84,8 +93,8 @@ sequenceDiagram
     participant R as Tracer
     participant S as Session
 
-    You->>O: harness "write primes.py and run it"
-    O->>O: load config, make client,<br/>build Policy + Toolset
+    You->>C: harness "write primes.py and run it"
+    C->>O: new_conversation(agent, approver=terminal_approver)
     O->>O: check config, workspace, environment, tool names<br/>(any problem fails here, before anything is created)
     O->>S: Session.create: new folder,<br/>system prompt (+ environment prompt) = message 0
     O->>O: provision: run the environment's setup in the workspace<br/>(fails: the session is removed)
@@ -102,7 +111,8 @@ sequenceDiagram
         alt no tool_calls
             A->>R: finish: run_end (outcome: answered)
             A-->>O: final text answer
-            O-->>You: print answer
+            O-->>C: TurnResult(answer, run_end totals)
+            C-->>You: answer on stdout, summary line on stderr
         else has tool_calls
             loop each tool call, in order
                 A->>T: execute(name, arguments JSON)
@@ -110,7 +120,7 @@ sequenceDiagram
                 alt permission is allow
                     P-->>T: None (go)
                 else permission is ask
-                    P->>You: approver: y/N prompt<br/>(or deny_all: no prompt)
+                    P->>You: approver: cli.py's y/N prompt<br/>(or deny_all: no prompt)
                     P-->>T: None, or a refusal message
                 end
                 opt approved
@@ -119,6 +129,7 @@ sequenceDiagram
                 end
                 T-->>A: result or error, always a string
                 A->>R: tool_call (name, raw arguments,<br/>result, seconds)
+                R-->>C: listener show_step: prints [step N] tool(args) -> result
                 A->>S: append {role: tool, tool_call_id, content}
             end
         end
@@ -269,6 +280,12 @@ sessions/2026-10-20T14-13-59_base_8569/
 
 ## 8. What a trace records
 
+**The trace is also how interfaces see progress.** The agent loop never prints: it reports
+each event to the tracer, which writes it to the file and then calls any *listeners* with it.
+`Conversation.turn(task, on_event=...)` is how an interface attaches one; the terminal's
+`show_step` prints each `tool_call` as it finishes. A web UI would attach a listener that
+streams events to the browser, with no change to the agent loop.
+
 One JSONL file per turn, inside its session: `sessions/<id>/turn-001.jsonl` (gitignored).
 The format is defined in one place, `tracer.py`: the agent reports what happened
 (`start`, `model_response`, `tool_call`, `finish`), and the tracer decides what's recorded.
@@ -308,13 +325,27 @@ A hash *identifies* content; it doesn't store it.
 
 ## 9. How the code is organized
 
-Arrows mean "imports". They only point one way: nothing imports the orchestrator,
+```text
+src/harness/
+  interfaces/   cli.py          where a human talks to the harness (terminal now; a web UI later)
+  orchestrator.py               wiring: Conversation, new/resume, no terminal I/O
+  agent.py                      the loop
+  providers/    omlx.py         reaching the model server: make_client, call_model
+  tools/        base.py, toolset.py, builtin/{fs,shell}.py
+  policy.py  config.py  environment.py  session.py  tracer.py  provenance.py
+```
+
+Arrows mean "imports". They only point one way: nothing imports an interface,
+nothing but the interface imports the orchestrator,
 tools never import the machinery around them, and `policy.py` imports nothing at runtime.
 
 ```mermaid
 flowchart TD
-    orch["orchestrator.py<br/>control plane, CLI"] --> agent["agent.py<br/>the loop"]
-    orch --> loader["config_loader.py<br/>reads + resolves agents/ and<br/>environments/ into a RunConfig"]
+    climod["interfaces/cli.py<br/>terminal interface:<br/>commands, chat loop, y/N prompt"] --> orch
+    orch["orchestrator.py<br/>control plane: Conversation,<br/>no terminal I/O"] --> agent["agent.py<br/>the loop"]
+    orch --> loader["config.py<br/>reads + resolves agents/ and<br/>environments/ into a RunConfig"]
+    orch --> providers["providers/omlx.py<br/>make_client, call_model"]
+    agent --> providers
     loader --> envmod
     loader --> tools_api
     orch --> sessionmod["session.py<br/>conversation on disk"]

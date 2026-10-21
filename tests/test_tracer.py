@@ -91,6 +91,31 @@ class TestFile:
         assert len(read_lines(path)) == 1
 
 
+class TestListeners:
+    def test_called_with_each_event_in_order(self):
+        seen = []
+        tracer = Tracer(listeners=[seen.append])
+        tracer.event("a", n=1)
+        tracer.event("b", n=2)
+        assert seen == tracer.events
+
+    def test_several_listeners(self):
+        first, second = [], []
+        Tracer(listeners=[first.append, second.append]).event("a")
+        assert len(first) == len(second) == 1
+
+    def test_called_after_the_line_is_on_disk(self, tmp_path):
+        path = tmp_path / "t.jsonl"
+        lines_when_called = []
+        tracer = Tracer(path, listeners=[lambda e: lines_when_called.append(len(read_lines(path)))])
+        tracer.event("a")
+        tracer.close()
+        assert lines_when_called == [1]  # a listener that crashes can't lose the event
+
+    def test_no_listeners_by_default(self):
+        assert Tracer().listeners == []
+
+
 class TestRunLifecycle:
     """start() writes run_start; exactly one run_end follows, from finish() or from __exit__."""
 

@@ -1,7 +1,8 @@
 """Policy: decides whether a tool call may run. Toolset.execute is where it's enforced.
 
 Each tool declares a permission: "allow" runs, "ask" goes to the approver. The
-approver is chosen per run: a human at the terminal, or "no" when nobody's there.
+approver is chosen per run, by the interface: interfaces/cli.py's terminal_approver asks a human
+at the terminal; deny_all (here) says no when nobody's there.
 Whether a risky tool is safe depends on where it runs, so that choice belongs to
 the run, not to the agent. (To keep an agent away from a tool, don't list it.)
 
@@ -21,22 +22,6 @@ Permission = Literal["allow", "ask"]
 # Same convention as Policy.check. The approver writes the message because only it
 # knows *why* it said no: a human declined, or nobody was there to ask.
 Approver = Callable[[str, dict], str | None]
-
-
-# this approver is currently only called from within the policy class
-def terminal_approver(name: str, arguments: dict) -> str | None:
-    """Ask the human at the terminal. Only an explicit "y" approves."""
-    print(f"\n  agent wants to run {name}")
-    for key, value in arguments.items():
-        text = str(value)
-        print(f"    {key}: {text if len(text) <= 300 else text[:300] + '...'}")
-    try:
-        answer = input("  allow? [y/N] ").strip().lower()
-    except EOFError:  # no terminal attached (e.g. piped input): same situation as unattended
-        return deny_all(name, arguments)
-    if answer == "y":
-        return None
-    return f"The user declined this {name} call. Try a different approach or ask the user."
 
 
 def deny_all(name: str, arguments: dict) -> str | None:

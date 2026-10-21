@@ -4,7 +4,7 @@ import pytest
 
 import json
 
-from harness.agent import call_model, run_agent
+from harness.agent import run_agent
 from harness.session import MESSAGES_FILE, Session
 from harness.tools import ToolContext, Toolset
 from harness.tracer import Tracer
@@ -172,35 +172,17 @@ class TestModelMistakesDoNotCrashTheLoop:
         assert answer == "recovered"
 
 
-class TestOutput:
-    def test_prints_each_call_and_result(self, capsys):
+class TestNoOutput:
+    def test_the_loop_prints_nothing(self, capsys):
+        # Showing progress is the interface's job (it listens to the tracer's events).
         run([reply(tool_calls=[call("echo", {"text": "hello"})]), reply("done")])
-        out = capsys.readouterr().out
-        assert '[step 1] echo({"text": "hello"})' in out
-        assert "  -> hello" in out
+        assert capsys.readouterr() == ("", "")
 
-    def test_long_results_are_previewed_but_sent_in_full(self, capsys):
-        long_text = "z" * 500
-        _, client = run([reply(tool_calls=[call("echo", {"text": long_text})]), reply("done")])
-        result_line = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("  -> "))
-        assert result_line == "  -> " + "z" * 200 + "..."  # terminal gets a 200-char preview
-        assert client.requests[1]["messages"][-1]["content"] == long_text  # the model gets all of it
-
-
-class TestCallModel:
-    def test_returns_the_whole_response(self):
-        # The whole response, so usage and finish_reason reach the trace.
-        client = FakeClient([reply("hi", usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4})])
-        response = call_model(client, [{"role": "user", "content": "x"}], "m", 0.5, [])
-        assert response.choices[0].message.content == "hi"
-        assert response.choices[0].finish_reason == "stop"
-        assert response.usage.prompt_tokens == 3
-        assert client.requests == [{"model": "m", "messages": [{"role": "user", "content": "x"}], "temperature": 0.5}]
-
-    def test_includes_tools_when_given(self):
-        client = FakeClient([reply("hi")])
-        call_model(client, [], "m", 0.5, [{"type": "function"}])
-        assert client.requests[0]["tools"] == [{"type": "function"}]
+    def test_listeners_see_every_event_as_it_happens(self):
+        seen = []
+        run([reply(tool_calls=[call("echo", {"text": "hello"})]), reply("done")], tracer=Tracer(listeners=[seen.append]))
+        assert [e["event"] for e in seen] == ["run_start", "model_response", "tool_call", "model_response", "run_end"]
+        assert seen[2]["result"] == "hello"
 
 
 class TestTracing:

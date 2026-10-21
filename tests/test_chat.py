@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from harness import config_loader, orchestrator
+from harness import config, orchestrator
+from harness.interfaces import cli
 from harness.session import INTERRUPTED
 from harness.tools import REGISTRY, Tool
 from tests.fakes import FakeClient, call, reply
@@ -14,7 +15,7 @@ from tests.fakes import FakeClient, call, reply
 def agents_dir(tmp_path, monkeypatch, fake_tools):
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(config_loader, "AGENTS_DIR", directory)
+    monkeypatch.setattr(config, "AGENTS_DIR", directory)
     write_agent(directory)
     return directory
 
@@ -69,7 +70,7 @@ class TestNewChat:
     def test_turns_share_one_session(self, agents_dir, sessions_dir, typed, model):
         typed("first question", "second question")
         client = model(reply("first answer"), reply("second answer"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         session = only_session(sessions_dir)
         assert sorted(p.name for p in session.glob("turn-*.jsonl")) == ["turn-001.jsonl", "turn-002.jsonl"]
         # turn 2 sees all of turn 1
@@ -83,7 +84,7 @@ class TestNewChat:
     def test_answers_are_printed(self, agents_dir, typed, model, capsys):
         typed("hi")
         model(reply("hello there"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         out = capsys.readouterr().out
         assert "hello there" in out
         assert "harness chat --resume" in out  # tells you how to come back
@@ -92,25 +93,25 @@ class TestNewChat:
     def test_exit_command(self, agents_dir, sessions_dir, typed, model, command):
         typed(command, "never sent")
         model()  # no model calls allowed
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         assert list(only_session(sessions_dir).glob("turn-*.jsonl")) == []
 
     @pytest.mark.parametrize("key", [EOFError, KeyboardInterrupt])
     def test_ctrl_d_or_ctrl_c_at_the_prompt_leaves(self, agents_dir, typed, model, key):
         typed(key, "never sent")
         model()
-        orchestrator.main(["chat"])  # returns normally, no traceback
+        cli.main(["chat"])  # returns normally, no traceback
 
     def test_blank_lines_are_ignored(self, agents_dir, typed, model):
         typed("", "   ", "real question")
         client = model(reply("ok"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         assert len(client.requests) == 1
 
     def test_tool_turns_work(self, agents_dir, sessions_dir, typed, model):
         typed("use the tool")
         model(reply(tool_calls=[call("echo", {"text": "hi"})]), reply("done"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         events = read(only_session(sessions_dir) / "turn-001.jsonl")
         assert [e["event"] for e in events] == ["run_start", "model_response", "tool_call", "model_response", "run_end"]
 
@@ -125,7 +126,7 @@ class TestSurvivingProblems:
         write_agent(agents_dir, tools=("slow",))
         typed("start something slow", "never mind, say hi")
         client = model(reply(tool_calls=[call("slow", {}, id="c1")]), reply("hi"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
 
         assert "(turn interrupted)" in capsys.readouterr().out
         # Turn 2's request is valid: the unanswered call got an INTERRUPTED result first.
@@ -138,7 +139,7 @@ class TestSurvivingProblems:
     def test_error_mid_turn_reports_and_continues(self, agents_dir, sessions_dir, typed, model, capsys):
         typed("first", "second")
         model(ConnectionError("model server went away"), reply("back again"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         captured = capsys.readouterr()
         assert "(turn failed: ConnectionError: model server went away)" in captured.err
         assert "back again" in captured.out
@@ -151,14 +152,14 @@ class TestResume:
     def start_chat(self, typed, model, sessions_dir, *lines):
         typed(*lines)
         model(*[reply(f"answer to {line}") for line in lines])
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         return only_session(sessions_dir)
 
     def test_continues_the_conversation(self, agents_dir, sessions_dir, typed, model):
         session = self.start_chat(typed, model, sessions_dir, "first")
         typed("second")
         client = model(reply("second answer"))
-        orchestrator.main(["chat", "--resume", session.name])
+        cli.main(["chat", "--resume", session.name])
         assert client.requests[0]["messages"][-3:] == [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "answer to first"},
@@ -171,7 +172,7 @@ class TestResume:
         capsys.readouterr()
         typed()
         model()
-        orchestrator.main(["chat", "--resume", session.name])
+        cli.main(["chat", "--resume", session.name])
         assert "resumed, 1 turns so far" in capsys.readouterr().out
 
     def test_keeps_the_pinned_system_prompt(self, agents_dir, sessions_dir, typed, model):
@@ -179,7 +180,7 @@ class TestResume:
         (agents_dir / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\n---\nEDITED prompt.\n")
         typed("second")
         client = model(reply("ok"))
-        orchestrator.main(["chat", "--resume", session.name])
+        cli.main(["chat", "--resume", session.name])
         assert client.requests[0]["messages"][0] == {"role": "system", "content": "Chat prompt."}
 
     def test_uses_the_agent_files_current_model(self, agents_dir, sessions_dir, typed, model):
@@ -187,7 +188,7 @@ class TestResume:
         write_agent(agents_dir, model="newer-model")
         typed("second")
         client = model(reply("ok"))
-        orchestrator.main(["chat", "--resume", session.name])
+        cli.main(["chat", "--resume", session.name])
         assert client.requests[0]["model"] == "newer-model"
         assert read(session / "turn-002.jsonl")[0]["config"]["model"] == "newer-model"  # the trace says so
 
@@ -195,24 +196,24 @@ class TestResume:
         write_agent(agents_dir, tools=("write_file",))
         typed("write it")
         model(reply(tool_calls=[call("write_file", {"path": "note.txt", "content": "hi"})]), reply("ok"))
-        orchestrator.main(["chat"])
+        cli.main(["chat"])
         session = only_session(sessions_dir)
         typed("read it")
         write_agent(agents_dir, tools=("read_file",))
         client = model(reply(tool_calls=[call("read_file", {"path": "note.txt"})]), reply("ok"))
-        orchestrator.main(["chat", "--resume", session.name])
+        cli.main(["chat", "--resume", session.name])
         assert client.requests[1]["messages"][-1]["content"] == "hi"  # same workspace, same file
 
     def test_unknown_session(self, agents_dir, sessions_dir, capsys):
         with pytest.raises(SystemExit):
-            orchestrator.main(["chat", "--resume", "no-such-session"])
+            cli.main(["chat", "--resume", "no-such-session"])
         assert "no session 'no-such-session'" in capsys.readouterr().err
 
     @pytest.mark.parametrize("flag", [["--agent", "base"], ["--workspace", "."], ["--environment", "none"]])
     def test_fixed_settings_cannot_change(self, agents_dir, sessions_dir, typed, model, flag, capsys):
         session = self.start_chat(typed, model, sessions_dir, "first")
         with pytest.raises(SystemExit):
-            orchestrator.main(["chat", "--resume", session.name, *flag])
+            cli.main(["chat", "--resume", session.name, *flag])
         assert "can't be changed when resuming" in capsys.readouterr().err
 
     def test_resume_session_records_environment_in_config(self, agents_dir, sessions_dir, typed, model, monkeypatch):
@@ -220,7 +221,7 @@ class TestResume:
         meta = json.loads((session / "session.json").read_text())
         meta["environment"] = {"name": "py", "version": "abc123", "variables": {}}
         (session / "session.json").write_text(json.dumps(meta))
-        _, agent = orchestrator.resume_session(session.name)
+        agent = orchestrator.resume_conversation(session.name).agent
         assert agent["environment"] == {"name": "py", "version": "abc123"}  # from the session, not the file
 
 

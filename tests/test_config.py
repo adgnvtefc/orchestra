@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from harness import config_loader
-from harness.config_loader import load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
+from harness import config
+from harness.config import load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
 from harness.environment import EnvironmentSetupError
 
 
@@ -109,9 +109,9 @@ def config_dirs(tmp_path, monkeypatch):
     """Temp agents/ and environments/ folders, with the project root at tmp_path."""
     agents, envs = tmp_path / "agents", tmp_path / "environments"
     agents.mkdir(), envs.mkdir()
-    monkeypatch.setattr(config_loader, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(config_loader, "AGENTS_DIR", agents)
-    monkeypatch.setattr(config_loader, "ENVIRONMENTS_DIR", envs)
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "AGENTS_DIR", agents)
+    monkeypatch.setattr(config, "ENVIRONMENTS_DIR", envs)
     (envs / "py.yaml").write_text("setup:\n  - echo hi\nprompt: |\n  You have Python.\n")
 
     def agent(name, extra=""):
@@ -124,7 +124,7 @@ class TestListAgents:
     def test_sorted_names(self, config_dirs):
         config_dirs("zeta")
         config_dirs("alpha")
-        assert config_loader.list_agents() == ["alpha", "zeta"]
+        assert config.list_agents() == ["alpha", "zeta"]
 
 
 class TestResolveWorkspace:
@@ -184,7 +184,7 @@ class TestResolveRunConfig:
         assert rc.system_prompt == "Base prompt."
 
     def test_unknown_tool(self, config_dirs, tmp_path):
-        (config_loader.AGENTS_DIR / "typo.md").write_text("---\nmodel: m\ntools:\n  - bsh\n---\nP\n")
+        (config.AGENTS_DIR / "typo.md").write_text("---\nmodel: m\ntools:\n  - bsh\n---\nP\n")
         with pytest.raises(ValueError, match="bsh"):
             resolve_run_config("typo")
 

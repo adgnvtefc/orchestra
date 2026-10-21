@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.config_loader import AGENTS_DIR, load_agent_config
+from harness.config import AGENTS_DIR, load_agent_config
 from harness.tools import ToolContext, Toolset
 from tests.fakes import NO_HUMAN
 

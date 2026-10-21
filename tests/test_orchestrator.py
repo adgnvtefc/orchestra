@@ -6,45 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from harness import config_loader, orchestrator
-from harness.policy import deny_all, terminal_approver
+from harness import config, orchestrator
+from harness.policy import deny_all
 from harness.tools import Toolset
 from tests.fakes import FakeClient, reply
 
-
-@pytest.fixture
-def env(monkeypatch):
-    """A controlled environment: the real .env is never read, and OMLX_* vars start unset."""
-    monkeypatch.setattr(orchestrator, "load_dotenv", lambda: None)
-    monkeypatch.delenv("OMLX_API_KEY", raising=False)
-    monkeypatch.delenv("OMLX_BASE_URL", raising=False)
-    return monkeypatch
-
-
-class TestMakeClient:
-    def test_missing_key_exits_with_help(self, env):
-        with pytest.raises(SystemExit, match="OMLX_API_KEY is not set"):
-            orchestrator.make_client()
-
-    def test_empty_key_counts_as_missing(self, env):
-        env.setenv("OMLX_API_KEY", "")
-        with pytest.raises(SystemExit):
-            orchestrator.make_client()
-
-    def test_default_base_url(self, env):
-        env.setenv("OMLX_API_KEY", "test-key")
-        client = orchestrator.make_client()
-        assert str(client.base_url).rstrip("/") == "http://127.0.0.1:8000/v1"
-        assert client.api_key == "test-key"
-
-    def test_base_url_from_env(self, env):
-        env.setenv("OMLX_API_KEY", "test-key")
-        env.setenv("OMLX_BASE_URL", "http://example.test:9999/v1")
-        assert str(orchestrator.make_client().base_url).rstrip("/") == "http://example.test:9999/v1"
-
-    def test_long_timeout_for_local_models(self, env):
-        env.setenv("OMLX_API_KEY", "test-key")
-        assert orchestrator.make_client().timeout == 600
+YES = lambda name, arguments: None  # an approver that approves everything (tests only)
 
 
 @pytest.fixture
@@ -52,7 +19,7 @@ def agents_dir(tmp_path, monkeypatch):
     """A temp agents/ folder the orchestrator reads from, plus a FakeClient it builds."""
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(config_loader, "AGENTS_DIR", directory)
+    monkeypatch.setattr(config, "AGENTS_DIR", directory)
     return directory
 
 
@@ -85,12 +52,13 @@ class TestRun:
         assert isinstance(captured_run["client"], FakeClient)
         assert isinstance(captured_run["toolset"], Toolset)
         assert list(captured_run["toolset"].tools) == ["read_file", "bash"]
-        assert captured_run["toolset"].policy.approver is terminal_approver  # a human answers "ask"
+        assert captured_run["toolset"].policy.approver is deny_all  # safe default: nobody to ask
 
-    def test_unattended_uses_deny_all(self, agents_dir, captured_run):
+    def test_approver_is_passed_through(self, agents_dir, captured_run):
+        # the interface decides how "ask" gets answered; the orchestrator just uses it
         write_agent(agents_dir, "base", tools=["bash"])
-        orchestrator.run("t", unattended=True)
-        assert captured_run["toolset"].policy.approver is deny_all
+        orchestrator.run("t", approver=YES)
+        assert captured_run["toolset"].policy.approver is YES
 
     def test_default_agent_is_base(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", prompt="I am base.")
@@ -132,96 +100,6 @@ class TestRun:
         monkeypatch.setattr(orchestrator, "make_client", lambda: client)
         assert orchestrator.run("say hi") == "hello from the fake model"
         assert client.requests[0]["messages"][0]["content"] == "Test prompt."
-
-
-class TestMain:
-    @pytest.fixture
-    def run_calls(self, agents_dir, monkeypatch):
-        """Replace orchestrator.run; record the keyword arguments main() passes it."""
-        write_agent(agents_dir, "base")
-        write_agent(agents_dir, "reader")
-        calls = []
-
-        def fake_run(task, **kwargs):
-            calls.append({"task": task, **kwargs})
-            return "printed answer"
-
-        monkeypatch.setattr(orchestrator, "run", fake_run)
-        return calls
-
-    def test_joins_words_into_one_task(self, run_calls, capsys):
-        orchestrator.main(["list", "the", "files"])
-        assert run_calls == [
-            {"task": "list the files", "agent_name": "base", "unattended": False, "workspace": None, "environment": None}
-        ]
-        assert capsys.readouterr().out.strip() == "printed answer"
-
-    def test_quoted_task(self, run_calls):
-        orchestrator.main(["list the files"])
-        assert run_calls[0]["task"] == "list the files"
-
-    def test_agent_flag(self, run_calls):
-        orchestrator.main(["--agent", "reader", "hi"])
-        assert run_calls[0]["agent_name"] == "reader"
-
-    def test_unattended_flag(self, run_calls):
-        orchestrator.main(["--unattended", "hi"])
-        assert run_calls[0]["unattended"] is True
-
-    def test_flags_after_task(self, run_calls):
-        orchestrator.main(["do", "it", "--unattended", "--agent", "reader"])
-        assert run_calls == [
-            {"task": "do it", "agent_name": "reader", "unattended": True, "workspace": None, "environment": None}
-        ]
-
-    def test_workspace_flag(self, run_calls, tmp_path):
-        orchestrator.main(["--workspace", str(tmp_path), "hi"])
-        assert run_calls[0]["workspace"] == tmp_path
-
-    def test_workspace_flag_expands_home(self, run_calls):
-        orchestrator.main(["--workspace", "~", "hi"])
-        assert run_calls[0]["workspace"] == Path.home()
-
-    def test_environment_flag(self, run_calls):
-        orchestrator.main(["--environment", "none", "hi"])
-        assert run_calls[0]["environment"] == "none"
-
-    def test_unknown_agent_lists_real_ones(self, run_calls, capsys):
-        with pytest.raises(SystemExit) as exit_info:
-            orchestrator.main(["--agent", "ghost", "hi"])
-        assert exit_info.value.code == 2  # argparse's "bad usage" exit code
-        assert "invalid choice: 'ghost' (choose from base, reader)" in capsys.readouterr().err
-        assert run_calls == []
-
-    @pytest.mark.parametrize("argv", [[], [""], ["   "]])
-    def test_no_task_is_a_usage_error(self, run_calls, capsys, argv):
-        with pytest.raises(SystemExit) as exit_info:
-            orchestrator.main(argv)
-        assert exit_info.value.code == 2
-        assert "usage: harness" in capsys.readouterr().err
-        assert run_calls == []
-
-    def test_help_lists_commands(self, run_calls, capsys):
-        with pytest.raises(SystemExit) as exit_info:
-            orchestrator.main(["--help"])
-        assert exit_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "run" in out and "chat" in out
-
-    def test_command_help_lists_options(self, run_calls, capsys):
-        with pytest.raises(SystemExit):
-            orchestrator.main(["run", "--help"])
-        out = capsys.readouterr().out
-        assert "--agent" in out and "--unattended" in out and "--environment" in out
-
-    def test_explicit_run_command(self, run_calls):
-        orchestrator.main(["run", "list", "files"])
-        assert run_calls[0]["task"] == "list files"
-
-    def test_reads_real_command_line_by_default(self, run_calls, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["harness", "from", "argv"])
-        orchestrator.main()
-        assert run_calls[0]["task"] == "from argv"
 
 
 class TestSessionsAndTraces:
@@ -274,22 +152,18 @@ class TestSessionsAndTraces:
         assert [e["event"] for e in events] == ["run_start", "model_response", "run_end"]
         assert events[0]["task"] == "say hi"
         assert events[0]["config"]["name"] == "base"
-        assert events[0]["approver"] == "terminal_approver"
+        assert events[0]["approver"] == "deny_all"  # run()'s default
         assert events[-1]["answer"] == "the answer"
 
-    def test_unattended_is_visible_in_trace(self, fake_model, sessions_dir):
-        orchestrator.run("t", unattended=True)
-        (session,) = self.session_dirs(sessions_dir)
-        assert self.read(session / "turn-001.jsonl")[0]["approver"] == "deny_all"
+    def test_approver_is_visible_in_trace(self, fake_model, sessions_dir):
+        def ask_nobody(name, arguments):
+            return "no"
 
-    def test_session_and_trace_printed_to_stderr(self, fake_model, sessions_dir, capsys):
-        orchestrator.run("t")
+        orchestrator.run("t", approver=ask_nobody)
         (session,) = self.session_dirs(sessions_dir)
-        captured = capsys.readouterr()
-        assert f"session: {session.name}  trace: turn-001.jsonl" in captured.err
-        assert "session:" not in captured.out  # stdout stays clean for the answer
+        assert self.read(session / "turn-001.jsonl")[0]["approver"] == "ask_nobody"
 
-    def test_crashed_run_still_leaves_session_and_trace(self, agents_dir, sessions_dir, monkeypatch, capsys):
+    def test_crashed_run_still_leaves_session_and_trace(self, agents_dir, sessions_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # first model call fails
         with pytest.raises(AssertionError):
@@ -297,7 +171,6 @@ class TestSessionsAndTraces:
         (session,) = self.session_dirs(sessions_dir)
         assert self.read(session / "turn-001.jsonl")[-1]["outcome"] == "crashed"
         assert self.read(session / "messages.jsonl")[-1] == {"role": "user", "content": "t"}  # saved before the crash
-        assert "session:" in capsys.readouterr().err  # printed even after a crash
 
 
 class TestWorkspaces:
@@ -375,7 +248,7 @@ class TestEnvironments:
 
         envs = tmp_path / "environments"
         envs.mkdir()
-        monkeypatch.setattr(config_loader, "ENVIRONMENTS_DIR", envs)
+        monkeypatch.setattr(config, "ENVIRONMENTS_DIR", envs)
         (envs / "greet.yaml").write_text(
             "setup:\n  - echo built > made.txt\nenv:\n  GREETING: hello\nprompt: |\n  You have made.txt.\n"
         )
@@ -397,25 +270,25 @@ class TestEnvironments:
         (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
         return session
 
-    def test_workspace_is_set_up_before_the_first_turn(self, setup_env, sessions_dir, approve):
+    def test_workspace_is_set_up_before_the_first_turn(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         assert (self.only_session(sessions_dir) / "workspace" / "made.txt").read_text() == "built\n"
 
-    def test_agent_commands_see_the_environment(self, setup_env, approve):
+    def test_agent_commands_see_the_environment(self, setup_env):
         client = setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         tool_result = [m for m in client.requests[1]["messages"] if m["role"] == "tool"][0]["content"]
         assert tool_result.startswith("[hello]")
 
-    def test_prompt_is_added_to_the_system_prompt(self, setup_env, approve):
+    def test_prompt_is_added_to_the_system_prompt(self, setup_env):
         client = setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         assert client.requests[0]["messages"][0]["content"] == "Base prompt.\n\nYou have made.txt."
 
-    def test_recorded_in_session_and_trace(self, setup_env, sessions_dir, approve):
+    def test_recorded_in_session_and_trace(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         session = self.only_session(sessions_dir)
         meta = json.loads((session / "session.json").read_text())
         assert meta["environment"]["name"] == "greet"
@@ -423,63 +296,88 @@ class TestEnvironments:
         start = json.loads((session / "turn-001.jsonl").read_text().splitlines()[0])
         assert start["config"]["environment"] == {"name": "greet", "version": meta["environment"]["version"]}
 
-    def test_environment_content_changes_the_agent_version(self, setup_env, sessions_dir, approve):
+    def test_environment_content_changes_the_agent_version(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         (setup_env.envs / "greet.yaml").write_text("env:\n  GREETING: changed\n")
         setup_env()
-        orchestrator.run("t")
+        orchestrator.run("t", approver=YES)
         versions = {json.loads((s / "session.json").read_text())["agent_version"] for s in sessions_dir.iterdir()}
         assert len(versions) == 2  # same agent file, different environment content: a different agent
 
-    def test_cli_none_overrides_agent_file(self, setup_env, sessions_dir, approve):
+    def test_cli_none_overrides_agent_file(self, setup_env, sessions_dir):
         client = setup_env()
-        orchestrator.run("t", environment="none")
+        orchestrator.run("t", approver=YES, environment="none")
         assert not (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
         assert client.requests[0]["messages"][0]["content"] == "Base prompt."
 
-    def test_cli_names_an_environment(self, setup_env, sessions_dir, approve):
+    def test_cli_names_an_environment(self, setup_env, sessions_dir):
         setup_env(environment_line="")
-        orchestrator.run("t", environment="greet")
+        orchestrator.run("t", approver=YES, environment="greet")
         assert (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
 
     def test_unknown_environment_fails_before_anything_is_created(self, setup_env, sessions_dir):
         setup_env(environment_line="environment: nope\n")
         with pytest.raises(Exception, match="no environment 'nope'"):
-            orchestrator.run("t")
+            orchestrator.run("t", approver=YES)
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
 
     def test_failed_setup_leaves_no_session(self, setup_env, sessions_dir):
         setup_env(environment_line="environment: broken\n")
         with pytest.raises(Exception, match="exit 3"):
-            orchestrator.run("t")
+            orchestrator.run("t", approver=YES)
         assert not any(sessions_dir.iterdir())
 
     def test_tool_typo_fails_before_anything_is_created(self, setup_env, agents_dir, sessions_dir):
         (agents_dir / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - bsh\n---\nP\n")
         with pytest.raises(ValueError, match="bsh"):
-            orchestrator.run("t")
+            orchestrator.run("t", approver=YES)
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
 
 
-class TestTurnSummary:
-    def end(self, steps=3, tool_calls=2, prompt=1904, cached=0, seconds=4.21):
-        return {"event": "run_end", "steps": steps, "tool_calls": tool_calls,
-                "tokens": {"prompt": prompt, "completion": 50, "cached": cached}, "seconds": seconds}
+class TestConversation:
+    """The API interfaces drive: new / resume a conversation, run turns, repair."""
 
-    def test_format(self):
-        assert orchestrator.turn_summary(self.end()) == "(3 model calls · 2 tool calls · 1,904 prompt tokens, 0 cached · 4.2s)"
-
-    def test_singular(self):
-        assert orchestrator.turn_summary(self.end(steps=1, tool_calls=1)).startswith("(1 model call · 1 tool call ·")
-
-    def test_no_token_figures_without_usage(self):
-        assert orchestrator.turn_summary(self.end(prompt=0)) == "(3 model calls · 2 tool calls · 4.2s)"
-
-    def test_printed_to_stderr_after_a_turn(self, agents_dir, monkeypatch, capsys):
+    def test_turn_returns_answer_and_totals(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        orchestrator.run("t")
-        captured = capsys.readouterr()
-        assert "(1 model call · 0 tool calls ·" in captured.err
-        assert "model call" not in captured.out  # stdout stays just the answer
+        result = orchestrator.new_conversation("base").turn("t")
+        assert result.answer == "hi"
+        assert (result.run_end["event"], result.run_end["steps"]) == ("run_end", 1)
+
+    def test_turn_passes_events_to_the_interface(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        seen = []
+        orchestrator.new_conversation("base").turn("t", on_event=seen.append)
+        assert [e["event"] for e in seen] == ["run_start", "model_response", "run_end"]
+
+    def test_turns_share_the_session(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base")
+        client = FakeClient([reply("one"), reply("two")])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        conv = orchestrator.new_conversation("base")
+        conv.turn("first")
+        conv.turn("second")
+        assert conv.session.next_turn == 3
+        assert client.requests[1]["messages"][-2]["content"] == "one"
+
+    def test_resume(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
+        first = orchestrator.new_conversation("base")
+        first.turn("first")
+        assert orchestrator.session_exists(first.session.id)
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        again = orchestrator.resume_conversation(first.session.id)
+        assert again.session.dir == first.session.dir
+        assert again.turn("second").answer == "two"
+        assert again.session.next_turn == 3
+
+    def test_session_exists(self):
+        assert not orchestrator.session_exists("no-such-session")
+
+    def test_orchestrator_never_touches_the_terminal(self):
+        # Interfaces do the reading and printing; the orchestrator only wires things.
+        source = Path(orchestrator.__file__).read_text()
+        assert "input(" not in source and "print(" not in source
