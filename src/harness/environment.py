@@ -40,6 +40,12 @@ class EnvironmentSetupError(Exception):
     """An environment file is invalid, or setting a workspace up failed."""
 
 
+def fill_workspace(variables: dict[str, str], workspace: Path) -> dict[str, str]:
+    """Replace "{workspace}" in each value with the workspace's path. The one place this happens:
+    setup commands and the agent's commands must always see the same values."""
+    return {name: value.replace("{workspace}", str(workspace)) for name, value in variables.items()}
+
+
 @dataclass(frozen=True)
 class Environment:
     name: str
@@ -52,7 +58,7 @@ class Environment:
 
     def variables(self, workspace: Path) -> dict[str, str]:
         """The extra environment variables for agent commands, with {workspace} filled in."""
-        return {name: value.replace("{workspace}", str(workspace)) for name, value in self.env.items()}
+        return fill_workspace(self.env, workspace)
 
 
 def load_environment(environments_dir: Path, name: str, project_root: Path) -> Environment:

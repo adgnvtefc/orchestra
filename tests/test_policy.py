@@ -45,6 +45,15 @@ class TestCheck:
         assert approver.asked == [("bash", {"command": "ls"})]
 
 
+class TestName:
+    def test_defaults_to_the_approvers_name(self):
+        assert Policy(deny_all).name == "deny_all"
+        assert Policy(terminal_approver).name == "terminal_approver"
+
+    def test_explicit_name_for_an_anonymous_approver(self):
+        assert Policy(lambda name, args: None, name="auto_approve").name == "auto_approve"
+
+
 class TestDenyAll:
     def test_always_declines(self):
         assert deny_all("bash", {"command": "ls"}) is not None

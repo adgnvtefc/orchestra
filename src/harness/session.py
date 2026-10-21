@@ -25,6 +25,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from harness.environment import Environment, fill_workspace
+
 SESSION_FILE = "session.json"
 MESSAGES_FILE = "messages.jsonl"
 
@@ -65,11 +67,17 @@ class Session:
         return Path(self.meta["workspace"])
 
     @property
+    def environment(self) -> dict | None:
+        """{"name", "version"} of the environment this session was set up with, or None."""
+        recorded = self.meta.get("environment")
+        return {"name": recorded["name"], "version": recorded["version"]} if recorded else None
+
+    @property
     def environment_variables(self) -> dict[str, str]:
         """The extra variables the session's commands run with, {workspace} filled in.
         Empty without an environment."""
         variables = (self.meta.get("environment") or {}).get("variables", {})
-        return {name: value.replace("{workspace}", str(self.workspace)) for name, value in variables.items()}
+        return fill_workspace(variables, self.workspace)
 
     @property
     def next_turn(self) -> int:
@@ -88,16 +96,17 @@ class Session:
         system_prompt: str,
         agent_version: str,
         workspace: Path | None = None,
-        environment: dict | None = None,
+        environment: Environment | None = None,
     ) -> "Session":
         """Start a new session. The system prompt becomes message 0 and is fixed from here on:
         editing the agent file later doesn't change sessions that already exist.
 
         `workspace`: an existing folder to work in. None (the default) gives the session its
         own empty folder, sessions/<id>/workspace/, so runs never see each other's files.
-        `environment`: {"name", "version", "variables"} of the environment it's set up with,
-        recorded so a resumed session gets the same variables. The variables are stored
-        with "{workspace}" unfilled (see environment_variables). None means no environment.
+        `environment`: what the workspace is set up with. Its name, version, and variables
+        are recorded so a resumed session gets the same variables even if the environment
+        file has changed since. The variables are stored with "{workspace}" unfilled (see
+        environment_variables). None means no environment.
         """
         session_id = new_session_id(agent)
         directory = root / session_id
@@ -110,7 +119,10 @@ class Session:
             "agent": agent,
             "agent_version": agent_version,  # what the session started with; each turn's trace has its own provenance
             "workspace": str(workspace.resolve()),
-            "environment": environment,
+            "environment": (
+                {"name": environment.name, "version": environment.version, "variables": environment.env}
+                if environment else None
+            ),
             "created": _now(),
         }
         session = cls(directory, meta, [])
@@ -125,7 +137,7 @@ class Session:
         meta = json.loads((directory / SESSION_FILE).read_text())
         messages = [json.loads(line) for line in (directory / MESSAGES_FILE).read_text().splitlines() if line]
         session = cls(directory, meta, messages)
-        session._repair_unanswered_tool_calls()
+        session.repair()
         return session
 
     def append(self, message: dict) -> None:
@@ -146,13 +158,16 @@ class Session:
         tmp.write_text(json.dumps(self.meta, indent=2, ensure_ascii=False))
         os.replace(tmp, path)
 
-    def _repair_unanswered_tool_calls(self) -> None:
+    def repair(self) -> None:
         """Answer tool calls left without results, so the history is valid to send again.
 
         The API rejects a history where an assistant message's tool_calls aren't each
         followed by a tool result. That happens when a turn is interrupted (Ctrl-C, crash)
         after the model asked for tools but before all their results were saved. Only the
         end of the history can be in that state, since results are saved as they arrive.
+
+        load() calls this; so does chat, after a turn is interrupted in the same process.
+        Repairing a history that needs nothing does nothing.
         """
         last_call = max((i for i, m in enumerate(self._messages) if m.get("tool_calls")), default=None)
         if last_call is None:

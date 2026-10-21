@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from harness.environment import Environment
 from harness.session import INTERRUPTED, MESSAGES_FILE, SESSION_FILE, Session, new_session_id
 
 
@@ -96,20 +97,34 @@ class TestWorkspace:
         assert Session.load(root, session.id).workspace == project.resolve()
 
 
+ENV = Environment(name="py", version="abc", env={"PATH": "{workspace}/.venv/bin", "X": "1"})
+
+
 class TestEnvironmentRecord:
     def test_recorded_with_workspace_unfilled(self, root):
-        env = {"name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"}}
-        session = Session.create(root, "base", "p", "v", environment=env)
-        assert json.loads((session.dir / SESSION_FILE).read_text())["environment"] == env
+        session = Session.create(root, "base", "p", "v", environment=ENV)
+        assert json.loads((session.dir / SESSION_FILE).read_text())["environment"] == {
+            "name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"},
+        }
 
     def test_variables_filled_in_on_read(self, root):
-        env = {"name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"}}
-        session = Session.create(root, "base", "p", "v", environment=env)
+        session = Session.create(root, "base", "p", "v", environment=ENV)
         assert session.environment_variables == {"PATH": f"{session.workspace}/.venv/bin", "X": "1"}
         assert Session.load(root, session.id).environment_variables == session.environment_variables
 
     def test_no_environment_no_variables(self, session):
         assert session.environment_variables == {}
+        assert session.environment is None
+
+    def test_environment_name_and_version(self, root):
+        session = Session.create(root, "base", "p", "v", environment=ENV)
+        assert session.environment == {"name": "py", "version": "abc"}
+
+    def test_session_and_environment_fill_the_same_way(self, root):
+        # Setup commands use Environment.variables(), the agent's commands use the session's:
+        # one shared function, so they can't disagree.
+        session = Session.create(root, "base", "p", "v", environment=ENV)
+        assert session.environment_variables == ENV.variables(session.workspace)
 
 
 class TestAppend:

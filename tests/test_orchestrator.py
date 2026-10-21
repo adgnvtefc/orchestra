@@ -201,12 +201,22 @@ class TestMain:
         assert "usage: harness" in capsys.readouterr().err
         assert run_calls == []
 
-    def test_help(self, run_calls, capsys):
+    def test_help_lists_commands(self, run_calls, capsys):
         with pytest.raises(SystemExit) as exit_info:
             orchestrator.main(["--help"])
         assert exit_info.value.code == 0
         out = capsys.readouterr().out
-        assert "--agent" in out and "--unattended" in out
+        assert "run" in out and "chat" in out
+
+    def test_command_help_lists_options(self, run_calls, capsys):
+        with pytest.raises(SystemExit):
+            orchestrator.main(["run", "--help"])
+        out = capsys.readouterr().out
+        assert "--agent" in out and "--unattended" in out and "--environment" in out
+
+    def test_explicit_run_command(self, run_calls):
+        orchestrator.main(["run", "list", "files"])
+        assert run_calls[0]["task"] == "list files"
 
     def test_reads_real_command_line_by_default(self, run_calls, monkeypatch):
         monkeypatch.setattr("sys.argv", ["harness", "from", "argv"])
@@ -340,17 +350,6 @@ class TestWorkspaces:
         assert (from_cli / "marker.txt").exists()
         assert not (from_config / "marker.txt").exists()
 
-    def test_agent_file_relative_path_is_from_project_root(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(config_loader, "PROJECT_ROOT", tmp_path)
-        (tmp_path / "sub").mkdir()
-        assert config_loader.resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
-
-    def test_agent_file_home_path(self):
-        assert config_loader.resolve_workspace(None, "~") == Path.home().resolve()
-
-    def test_none_means_fresh(self):
-        assert config_loader.resolve_workspace(None, None) is None
-
     @pytest.mark.parametrize("source", ["cli", "config"])
     def test_missing_folder_fails_before_anything_is_created(self, writes_a_file, sessions_dir, tmp_path, source):
         missing = tmp_path / "typo"
@@ -461,3 +460,26 @@ class TestEnvironments:
         with pytest.raises(ValueError, match="bsh"):
             orchestrator.run("t")
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
+
+
+class TestTurnSummary:
+    def end(self, steps=3, tool_calls=2, prompt=1904, cached=0, seconds=4.21):
+        return {"event": "run_end", "steps": steps, "tool_calls": tool_calls,
+                "tokens": {"prompt": prompt, "completion": 50, "cached": cached}, "seconds": seconds}
+
+    def test_format(self):
+        assert orchestrator.turn_summary(self.end()) == "(3 model calls · 2 tool calls · 1,904 prompt tokens, 0 cached · 4.2s)"
+
+    def test_singular(self):
+        assert orchestrator.turn_summary(self.end(steps=1, tool_calls=1)).startswith("(1 model call · 1 tool call ·")
+
+    def test_no_token_figures_without_usage(self):
+        assert orchestrator.turn_summary(self.end(prompt=0)) == "(3 model calls · 2 tool calls · 4.2s)"
+
+    def test_printed_to_stderr_after_a_turn(self, agents_dir, monkeypatch, capsys):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        orchestrator.run("t")
+        captured = capsys.readouterr()
+        assert "(1 model call · 0 tool calls ·" in captured.err
+        assert "model call" not in captured.out  # stdout stays just the answer

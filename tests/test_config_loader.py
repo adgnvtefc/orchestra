@@ -1,9 +1,13 @@
-"""load_agent_config: parsing agent .md files (YAML settings + Markdown system prompt)."""
+"""Config: parsing agent files, and resolving agent + environment + command-line overrides into a RunConfig."""
+
+from pathlib import Path
 
 import pytest
 import yaml
 
-from harness.config_loader import load_agent_config
+from harness import config_loader
+from harness.config_loader import load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
+from harness.environment import EnvironmentSetupError
 
 
 @pytest.fixture
@@ -98,3 +102,98 @@ class TestInvalidFiles:
         # safe_load refuses python/* tags; plain yaml.load would execute this.
         with pytest.raises(yaml.constructor.ConstructorError):
             load_agent_config(agent_file("---\nx: !!python/object/apply:os.system ['echo pwned']\n---\nhi"))
+
+
+@pytest.fixture
+def config_dirs(tmp_path, monkeypatch):
+    """Temp agents/ and environments/ folders, with the project root at tmp_path."""
+    agents, envs = tmp_path / "agents", tmp_path / "environments"
+    agents.mkdir(), envs.mkdir()
+    monkeypatch.setattr(config_loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config_loader, "AGENTS_DIR", agents)
+    monkeypatch.setattr(config_loader, "ENVIRONMENTS_DIR", envs)
+    (envs / "py.yaml").write_text("setup:\n  - echo hi\nprompt: |\n  You have Python.\n")
+
+    def agent(name, extra=""):
+        (agents / f"{name}.md").write_text(f"---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - bash\n{extra}---\nBase prompt.\n")
+
+    return agent
+
+
+class TestListAgents:
+    def test_sorted_names(self, config_dirs):
+        config_dirs("zeta")
+        config_dirs("alpha")
+        assert config_loader.list_agents() == ["alpha", "zeta"]
+
+
+class TestResolveWorkspace:
+    def test_cli_wins(self, tmp_path):
+        assert resolve_workspace(tmp_path, "somewhere/else") == tmp_path.resolve()
+
+    def test_agent_file_path_is_from_project_root(self, config_dirs, tmp_path):
+        (tmp_path / "sub").mkdir()
+        assert resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
+
+    def test_agent_file_home_path(self):
+        assert resolve_workspace(None, "~") == Path.home().resolve()
+
+    def test_none_means_fresh(self):
+        assert resolve_workspace(None, None) is None
+
+    def test_must_exist(self, tmp_path):
+        with pytest.raises(ValueError, match="not an existing folder"):
+            resolve_workspace(tmp_path / "typo", None)
+
+
+class TestResolveEnvironment:
+    def test_from_agent_file(self, config_dirs):
+        assert resolve_environment(None, "py").name == "py"
+
+    def test_cli_wins(self, config_dirs):
+        assert resolve_environment("none", "py") is None
+
+    def test_neither(self, config_dirs):
+        assert resolve_environment(None, None) is None
+
+    def test_unknown(self, config_dirs):
+        with pytest.raises(EnvironmentSetupError, match="no environment 'nope'"):
+            resolve_environment("nope", None)
+
+
+class TestResolveRunConfig:
+    def test_without_environment(self, config_dirs):
+        config_dirs("base")
+        rc = resolve_run_config("base")
+        assert rc.agent["name"] == "base"
+        assert rc.agent["environment"] is None
+        assert rc.system_prompt == "Base prompt."
+        assert rc.workspace is None and rc.environment is None
+
+    def test_environment_is_resolved_into_the_config(self, config_dirs):
+        config_dirs("base", "environment: py\n")
+        rc = resolve_run_config("base")
+        assert rc.agent["environment"] == {"name": "py", "version": rc.environment.version}
+        assert rc.system_prompt == "Base prompt.\n\nYou have Python."
+
+    def test_cli_overrides(self, config_dirs, tmp_path):
+        config_dirs("base", "environment: py\n")
+        rc = resolve_run_config("base", workspace=tmp_path, environment="none")
+        assert rc.workspace == tmp_path.resolve()
+        assert rc.environment is None
+        assert rc.system_prompt == "Base prompt."
+
+    def test_unknown_tool(self, config_dirs, tmp_path):
+        (config_loader.AGENTS_DIR / "typo.md").write_text("---\nmodel: m\ntools:\n  - bsh\n---\nP\n")
+        with pytest.raises(ValueError, match="bsh"):
+            resolve_run_config("typo")
+
+    def test_unknown_agent(self, config_dirs):
+        with pytest.raises(FileNotFoundError):
+            resolve_run_config("ghost")
+
+    def test_creates_nothing(self, config_dirs, tmp_path):
+        config_dirs("base", "environment: py\n")
+        before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+        resolve_run_config("base")
+        assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before

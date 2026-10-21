@@ -29,15 +29,27 @@ class RunConfig:
     environment: Environment | None
 
 
+def list_agents() -> list[str]:
+    """Names of the agents defined in agents/, sorted."""
+    return sorted(path.stem for path in AGENTS_DIR.glob("*.md"))
+
+
+def resolve_agent(agent_name: str) -> dict:
+    """Read agents/<name>.md and check its tool names. Just the agent's own settings: a
+    resumed session uses this, since its workspace and environment are already fixed."""
+    agent = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
+    Toolset.check_names(agent.get("tools", []))  # no `tools:` key means no tools: access is opt-in
+    return agent
+
+
 def resolve_run_config(agent_name: str, *, workspace: Path | None = None, environment: str | None = None) -> RunConfig:
     """Read the agent file and apply the command line's overrides; check everything.
 
     `workspace` / `environment` come from the command line and win over the agent file's.
     """
-    agent = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
+    agent = resolve_agent(agent_name)
     folder = resolve_workspace(workspace, agent.get("workspace"))
     env = resolve_environment(environment, agent.get("environment"))
-    Toolset.check_names(agent.get("tools", []))  # no `tools:` key means no tools: access is opt-in
 
     # The resolved config records what the run actually used: the environment's name *and*
     # version, so agent_version changes whenever the environment's content does.

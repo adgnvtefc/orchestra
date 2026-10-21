@@ -52,8 +52,12 @@ def deny_all(name: str, arguments: dict) -> str | None:
 
 
 class Policy:
-    def __init__(self, approver: Approver):
+    def __init__(self, approver: Approver, name: str | None = None):
+        """`name` labels the policy in traces; it defaults to the approver function's name
+        ("terminal_approver", "deny_all"). Pass one explicitly for an approver without a
+        meaningful name, like a lambda."""
         self.approver = approver
+        self.name = name or approver.__name__
 
     def check(self, tool: "Tool", arguments: dict) -> str | None:
         """Return None if the call may run, or a refusal message for the model."""

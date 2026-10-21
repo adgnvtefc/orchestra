@@ -351,3 +351,38 @@ class TestSession:
             run([reply(tool_calls=[call("echo", {"text": "a"})])], session=session)  # no reply for step 2
         roles = [m["role"] for m in self.saved(session)]
         assert roles == ["system", "user", "assistant", "tool"]
+
+
+class TestTotals:
+    """run_end carries totals for the whole turn, so nothing has to recount the events."""
+
+    def usage(self, prompt, completion, cached=0):
+        return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion,
+                "prompt_tokens_details": {"cached_tokens": cached}}
+
+    def test_counts_and_sums(self):
+        tracer = Tracer()
+        run(
+            [
+                reply(tool_calls=[call("echo", {"text": "a"}), call("echo", {"text": "b"})], usage=self.usage(100, 10)),
+                reply(tool_calls=[call("echo", {"text": "c"})], usage=self.usage(150, 5, cached=100)),
+                reply("done", usage=self.usage(180, 20, cached=150)),
+            ],
+            tracer=tracer,
+        )
+        end = tracer.events[-1]
+        assert end["steps"] == 3  # model calls
+        assert end["tool_calls"] == 3  # two in one response, then one
+        assert end["tokens"] == {"prompt": 430, "completion": 35, "cached": 250}
+
+    def test_no_usage_reported(self):
+        tracer = Tracer()
+        run([reply("done")], tracer=tracer)
+        assert tracer.events[-1]["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+
+    def test_totals_reset_per_run(self):
+        tracer = Tracer()
+        run([reply(tool_calls=[call("echo", {"text": "a"})], usage=self.usage(10, 1)), reply("x")], tracer=tracer)
+        run([reply("y", usage=self.usage(5, 1))], tracer=tracer)
+        end = tracer.events[-1]
+        assert (end["steps"], end["tool_calls"], end["tokens"]["prompt"]) == (1, 0, 5)

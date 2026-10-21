@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-20, environments: workspaces set up from config before the first turn
+**Last updated:** 2026-10-20, `harness chat` and `--resume`: many turns per session
 
 ---
 
@@ -15,11 +15,11 @@ one checkpoint.
 
 ```mermaid
 flowchart TD
-    user(["You<br/>uv run harness 'task' --agent base --unattended"])
+    user(["You<br/>harness 'task'  (one turn)<br/>harness chat  /  chat --resume ID"])
 
     subgraph control["Control plane: orchestrator.py"]
         direction LR
-        cli["main()<br/>parses flags"] --> run["run()"]
+        cli["main()<br/>run / chat commands"] --> run["run() or chat()<br/>start or resume a session,<br/>then run_turn() per turn"]
     end
 
     subgraph inputs["Config files"]
@@ -61,7 +61,12 @@ flowchart TD
 
 ---
 
-## 2. One run, step by step
+## 2. One turn, step by step
+
+`harness "task"` is a new session with one turn. `harness chat` loops: read a line, run a
+turn, print the answer, repeat; every turn adds to the same session. `chat --resume ID`
+reloads a saved session (repairing an interrupted history) and keeps going. The diagram
+shows one turn of a new session; a resumed or later turn skips the creation steps.
 
 The model is stateless: every turn sends the **whole** conversation. The loop ends
 when the model replies without asking for a tool, or when `max_steps` runs out.
@@ -208,7 +213,26 @@ prompt: |                               # appended to the system prompt automati
 
 ---
 
-## 6. What the model sees: the conversation grows
+## 6. Chat: many turns, one session
+
+```text
+$ harness chat                        $ harness chat --resume 2026-10-20T18-55-51_base_66ec
+you> Create fruits.txt ...            you> which one did you add last time?
+you> Add a fourth fruit to it ...     -> "mango", remembered from the earlier process
+```
+
+- **What's fixed when the session is created:** system prompt, workspace, environment.
+  Resuming can't change them (`--agent`/`--workspace`/`--environment` with `--resume` is an error).
+- **What comes from the agent file each time:** model, temperature, max_steps, tools; each
+  turn's trace records exactly what it used.
+- **Ctrl-C during a turn** stops only that turn: `session.repair()` answers any tool call left
+  without a result (the API would reject the next request otherwise), and the prompt comes back.
+  **An error** (e.g. the model server going away) does the same. Ctrl-C/Ctrl-D/`/exit` at the
+  prompt leaves, printing the command to resume.
+
+---
+
+## 7. What the model sees: the conversation grows
 
 From a real run of `"Write primes.py that prints the first 10 primes, run it"`:
 
@@ -243,7 +267,7 @@ sessions/2026-10-20T14-13-59_base_8569/
 
 ---
 
-## 7. What a trace records
+## 8. What a trace records
 
 One JSONL file per turn, inside its session: `sessions/<id>/turn-001.jsonl` (gitignored).
 The format is defined in one place, `tracer.py`: the agent reports what happened
@@ -282,7 +306,7 @@ A hash *identifies* content; it doesn't store it.
 
 ---
 
-## 8. How the code is organized
+## 9. How the code is organized
 
 Arrows mean "imports". They only point one way: nothing imports the orchestrator,
 tools never import the machinery around them, and `policy.py` imports nothing at runtime.
@@ -290,11 +314,14 @@ tools never import the machinery around them, and `policy.py` imports nothing at
 ```mermaid
 flowchart TD
     orch["orchestrator.py<br/>control plane, CLI"] --> agent["agent.py<br/>the loop"]
-    orch --> loader["config_loader.py<br/>reads agents/*.md"]
+    orch --> loader["config_loader.py<br/>reads + resolves agents/ and<br/>environments/ into a RunConfig"]
+    loader --> envmod
+    loader --> tools_api
     orch --> sessionmod["session.py<br/>conversation on disk"]
     orch --> envmod["environment.py<br/>load + provision"]
     envmod --> base
     agent --> sessionmod
+    sessionmod --> envmod
     orch --> policy["policy.py<br/>Policy, approvers"]
     orch --> tools_api["tools/__init__.py<br/>public API"]
     orch --> tracer["tracer.py<br/>JSONL events"]
@@ -304,7 +331,7 @@ flowchart TD
     tools_api --> toolset["tools/toolset.py<br/>REGISTRY + Toolset"]
     toolset --> policy
     toolset --> builtin["tools/builtin/<br/>fs.py, shell.py"]
-    toolset --> base["tools/base.py<br/>Tool, WORKSPACE, truncate"]
+    toolset --> base["tools/base.py<br/>Tool, ToolContext, agent_env, truncate"]
     builtin --> base
     base -.->|"Permission type only"| policy
 ```
@@ -315,7 +342,6 @@ flowchart TD
 
 What's planned, in rough order. Each becomes a diagram change when it lands.
 
-- **`harness chat` / resume:** many turns in one session, continued later (the next step).
 - **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
 - **Sandbox:** `bash` runs in a container; then a `--yes` mode can auto-approve safely.

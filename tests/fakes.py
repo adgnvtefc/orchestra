@@ -58,6 +58,8 @@ def reply(
 class FakeClient:
     """Mimics `client.chat.completions.create(**kwargs)`, returning scripted replies in order.
 
+    A scripted item that's an exception is raised instead of returned.
+
     `requests` records a deep copy of every request's kwargs. A copy matters: the agent
     keeps appending to the same `messages` list, so without it every recorded request
     would show the final conversation instead of what was actually sent at that step.
@@ -72,9 +74,12 @@ class FakeClient:
     def create(self, **kwargs) -> ChatCompletion:
         self.requests.append(copy.deepcopy(kwargs))
         try:
-            return next(self._replies)
+            item = next(self._replies)
         except StopIteration:
             raise AssertionError(f"model called more times than scripted ({len(self.requests)} calls)") from None
+        if isinstance(item, BaseException):  # script a failure, e.g. the server going away
+            raise item
+        return item
 
 
 def always(response_factory):

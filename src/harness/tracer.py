@@ -31,6 +31,8 @@ class Tracer:
         self.path = path
         self.events: list[dict] = []
         self.steps = 0  # model responses received so far; run_end reports it
+        self.tool_calls = 0  # tool calls made so far; run_end reports it
+        self.tokens = {"prompt": 0, "completion": 0, "cached": 0}  # summed over every model call
         self._started: float | None = None  # time.monotonic() at start(); None until the run starts
         self._ended = False  # True once run_end is written; there is only ever one
         self._file = None
@@ -53,6 +55,8 @@ class Tracer:
     def start(self, task: str, config: dict, tools: list[dict], approver: str) -> None:
         """run_start: everything needed to know what this run was set up to do, and what produced it."""
         self._started = time.monotonic()
+        self.steps, self.tool_calls = 0, 0
+        self.tokens = {"prompt": 0, "completion": 0, "cached": 0}
         self.event(
             "run_start",
             task=task,
@@ -64,6 +68,13 @@ class Tracer:
 
     def model_response(self, step: int, response: "ChatCompletion", seconds: float) -> None:
         self.steps = step
+        if response.usage:
+            # Every call re-sends the whole conversation, so prompt tokens add up fast; cached
+            # ones are those the server didn't have to process again.
+            details = response.usage.prompt_tokens_details
+            self.tokens["prompt"] += response.usage.prompt_tokens or 0
+            self.tokens["completion"] += response.usage.completion_tokens or 0
+            self.tokens["cached"] += (details.cached_tokens or 0) if details else 0
         choice = response.choices[0]
         msg = choice.message
         # creates the event with the info extracted from message
@@ -80,6 +91,7 @@ class Tracer:
         )
 
     def tool_call(self, step: int, call: "ChatCompletionMessageToolCall", result: str, seconds: float) -> None:
+        self.tool_calls += 1
         # creates event from tool call
         self.event(
             "tool_call",
@@ -96,9 +108,12 @@ class Tracer:
         self._end(outcome=outcome, answer=answer)
 
     def _end(self, **fields) -> None:
-        """Write the one run_end, with the step count and total time every run_end carries."""
+        """Write the one run_end, with the totals every run_end carries: model calls (steps),
+        tool calls, tokens, and time. Anything reading traces gets these without recounting."""
         seconds = round(time.monotonic() - self._started, 3) if self._started is not None else None
-        self.event("run_end", **fields, steps=self.steps, seconds=seconds)
+        self.event(
+            "run_end", **fields, steps=self.steps, tool_calls=self.tool_calls, tokens=dict(self.tokens), seconds=seconds
+        )
         self._ended = True
 
     def close(self) -> None:
