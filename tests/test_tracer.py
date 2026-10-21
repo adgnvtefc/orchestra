@@ -130,6 +130,12 @@ class TestRunLifecycle:
             "run_start", "task", {"model": "m"}, [{"t": 1}], "deny_all",
         )
 
+    def test_start_records_the_sandbox(self):
+        tracer = Tracer()
+        tracer.start("t", {}, [], "a", sandbox="seatbelt")
+        tracer.start("t", {}, [], "a")
+        assert [e["sandbox"] for e in tracer.events] == ["seatbelt", "none"]
+
     def test_start_records_provenance(self):
         tracer = Tracer()
         tracer.start("t", {"model": "m", "system_prompt": "p"}, [], "a")

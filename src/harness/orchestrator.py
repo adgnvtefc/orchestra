@@ -14,17 +14,21 @@ from pathlib import Path
 from openai import OpenAI
 
 from harness.agent import run_agent
-from harness.config import PROJECT_ROOT, RunConfig, resolve_agent, resolve_run_config
+from harness.config import RunConfig, resolve_agent, resolve_run_config
 from harness.environment import provision
 from harness.policy import Approver, Policy, deny_all
 from harness.provenance import agent_version
+from harness.sandbox import Seatbelt, Unsandboxed, default_sandbox
 from harness.providers import make_client
 from harness.session import Session
 from harness.tools import ToolContext, Toolset
 from harness.tracer import Tracer
 
-# Where sessions (conversations, traces, default workspaces) are stored.
-SESSIONS_DIR = PROJECT_ROOT / "sessions"
+# Where sessions (conversations, traces, default workspaces) are stored. Deliberately *outside*
+# this project: tools that walk up looking for their config (git, pytest, uv) would otherwise
+# find the harness's own .git and pyproject.toml from inside every workspace.
+# (~/projects/orchestra-sessions is a symlink here, for opening it in an editor.)
+SESSIONS_DIR = Path.home() / ".orchestra" / "sessions"
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ def new_conversation(
     agent_name: str = "base",
     *,
     approver: Approver = deny_all,
+    sandbox: Seatbelt | Unsandboxed | None = None,
     workspace: Path | None = None,
     environment: str | None = None,
 ) -> Conversation:
@@ -71,16 +76,20 @@ def new_conversation(
 
     `approver`: how "ask" tools get answered. The default, deny_all, is the safe one: an
     interface that can ask a human passes its own (interfaces/cli.py passes terminal_approver).
+    `sandbox`: how bash commands are confined; None means default_sandbox() (Seatbelt on macOS).
     `workspace` / `environment`: override the agent file's; see config.
     """
     # Resolve and check all config first: a typo should fail before any folder is created.
     rc = resolve_run_config(agent_name, workspace=workspace, environment=environment)
     client = make_client()
     session = start_session(rc)
-    return Conversation(session, rc.agent, client, build_toolset(session, rc.agent.get("tools", []), approver))
+    toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox or default_sandbox())
+    return Conversation(session, rc.agent, client, toolset)
 
 
-def resume_conversation(session_id: str, *, approver: Approver = deny_all) -> Conversation:
+def resume_conversation(
+    session_id: str, *, approver: Approver = deny_all, sandbox: Seatbelt | Unsandboxed | None = None
+) -> Conversation:
     """Reopen a saved session and get it ready for more turns.
 
     The session keeps what it was created with (system prompt, workspace, environment);
@@ -91,7 +100,8 @@ def resume_conversation(session_id: str, *, approver: Approver = deny_all) -> Co
     agent = resolve_agent(session.agent)
     agent["environment"] = session.environment  # what the workspace was set up with, not today's file
     client = make_client()
-    return Conversation(session, agent, client, build_toolset(session, agent.get("tools", []), approver))
+    toolset = build_toolset(session, agent.get("tools", []), approver, sandbox or default_sandbox())
+    return Conversation(session, agent, client, toolset)
 
 
 def session_exists(session_id: str) -> bool:
@@ -120,11 +130,11 @@ def start_session(rc: RunConfig) -> Session:
     return session
 
 
-def build_toolset(session: Session, tools: list[str], approver: Approver) -> Toolset:
+def build_toolset(session: Session, tools: list[str], approver: Approver, sandbox: Seatbelt | Unsandboxed) -> Toolset:
     """The tools for a turn of `session`: confined to its workspace, with its environment's variables.
 
     Built from the session (not the config) so a resumed session works on the same folder
     with the same variables it started with.
     """
-    context = ToolContext(workspace=session.workspace, env=session.environment_variables)
+    context = ToolContext(workspace=session.workspace, env=session.environment_variables, sandbox=sandbox)
     return Toolset(tools, Policy(approver), context)

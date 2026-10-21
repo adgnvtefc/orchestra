@@ -6,24 +6,28 @@ import subprocess
 
 from harness.tools.base import Tool, ToolContext, truncate
 
+
 def bash(ctx: ToolContext, command: str, timeout: int = 30) -> str:
     """Run `command` in a shell inside the workspace and return combined stdout/stderr + exit code.
 
     Approval is not this function's job: BASH's permission is "ask", so the Policy
-    checks with the human before this ever runs. (Real sandboxing is Phase 2.)
+    checks with the human before this ever runs. Confinement isn't either: ctx.sandbox
+    prepares the command (Seatbelt wraps it so it can only touch the workspace).
     The command sees only ctx.command_env(): allowlisted variables plus the environment's.
     Truncate huge output so one command can't flood the context window.
     """
     ctx.workspace.mkdir(parents=True, exist_ok=True)
+    argv, sandbox_env = ctx.sandbox.prepare(command, ctx.workspace)
     proc = subprocess.Popen(
-        command,
-        shell=True,
+        argv,
         cwd=ctx.workspace,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         stdin=subprocess.DEVNULL,  # a command waiting for input would otherwise hang until timeout
-        env=ctx.command_env(),  # allowlisted variables only: no API keys, not the harness's Python
+        # allowlisted variables only (no API keys, not the harness's Python); the sandbox's own
+        # (TMPDIR into the workspace) win over the environment's, since they're confinement rules
+        env={**ctx.command_env(), **sandbox_env},
         # The shell becomes leader of a new process group, and everything it starts joins
         # that group. On timeout we kill the whole group: killing just the shell would
         # leave its children (servers, test runners, `sleep`) running as orphans.

@@ -5,6 +5,7 @@ import re
 
 import pytest
 
+from harness.sandbox import Unsandboxed
 from harness.policy import Policy
 from harness.tools import REGISTRY, ToolContext, Toolset
 from tests.fakes import NO_HUMAN
@@ -134,8 +135,8 @@ class TestContext:
     def test_each_toolset_works_in_its_own_workspace(self, tmp_path):
         a, b = tmp_path / "a", tmp_path / "b"
         a.mkdir(), b.mkdir()
-        Toolset(["write_file"], NO_HUMAN, ToolContext(a)).execute("write_file", '{"path": "f.txt", "content": "A"}')
-        Toolset(["write_file"], NO_HUMAN, ToolContext(b)).execute("write_file", '{"path": "f.txt", "content": "B"}')
+        Toolset(["write_file"], NO_HUMAN, ToolContext(a, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "A"}')
+        Toolset(["write_file"], NO_HUMAN, ToolContext(b, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "B"}')
         assert (a / "f.txt").read_text() == "A"
         assert (b / "f.txt").read_text() == "B"
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from harness.sandbox import Unsandboxed
 from harness.config import AGENTS_DIR, load_agent_config
 from harness.tools import ToolContext, Toolset
 from tests.fakes import NO_HUMAN
@@ -40,4 +41,4 @@ class TestAgentFile:
     def test_tools_exist(self, path):
         tools = load_agent_config(path).get("tools", [])
         assert isinstance(tools, list)
-        Toolset(tools, NO_HUMAN, ToolContext(workspace=Path(".")))  # raises on any unknown tool name
+        Toolset(tools, NO_HUMAN, ToolContext(workspace=Path("."), sandbox=Unsandboxed()))  # raises on any unknown tool name

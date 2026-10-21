@@ -16,6 +16,7 @@ from pathlib import Path
 from harness.config import list_agents
 from harness.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
 from harness.policy import deny_all
+from harness.sandbox import Unsandboxed, default_sandbox
 
 
 # this approver is currently only called from within the policy class
@@ -116,6 +117,11 @@ def main(argv: list[str] | None = None) -> None:
         help="never prompt; tools that would ask for approval are declined (for scripts and evals)",
     )
     new_session.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        help="run bash commands unconfined, with your full permissions (default: sandboxed to the workspace on macOS)",
+    )
+    new_session.add_argument(
         "--workspace",
         help="an existing folder for the agent to work in (default: a fresh folder inside the session)",
     )
@@ -136,8 +142,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # The terminal decides how to ask a human; the orchestrator just uses whatever it's given.
     approver = deny_all if args.unattended else terminal_approver
+    sandbox = Unsandboxed() if args.no_sandbox else default_sandbox()
     workspace = Path(args.workspace).expanduser() if args.workspace else None
-    new = dict(approver=approver, workspace=workspace, environment=args.environment)
+    new = dict(approver=approver, sandbox=sandbox, workspace=workspace, environment=args.environment)
 
     if args.command == "run":
         task = " ".join(args.task).strip()
@@ -163,7 +170,7 @@ def main(argv: list[str] | None = None) -> None:
             chat_cmd.error(f"{', '.join(fixed)} can't be changed when resuming: the session keeps what it started with")
         if not session_exists(args.resume):
             chat_cmd.error(f"no session {args.resume!r}")
-        conv = resume_conversation(args.resume, approver=approver)
+        conv = resume_conversation(args.resume, approver=approver, sandbox=sandbox)  # per run, not fixed
     else:
         conv = new_conversation(args.agent or "base", **new)
     chat(conv)

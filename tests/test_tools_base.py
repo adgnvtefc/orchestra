@@ -23,6 +23,14 @@ class TestTool:
             Tool(fn=lambda: "", schema={"function": {"name": "abc"}})
 
 
+class TestToolContext:
+    def test_sandbox_is_required(self, tmp_path):
+        # No default: forgetting it is an error, not a silently unsandboxed bash.
+        from harness.tools import ToolContext
+        with pytest.raises(TypeError, match="sandbox"):
+            ToolContext(workspace=tmp_path)
+
+
 class TestTruncate:
     def test_short_text_unchanged(self):
         assert truncate("hello") == "hello"

@@ -352,6 +352,22 @@ class TestConversation:
         orchestrator.new_conversation("base").turn("t", on_event=seen.append)
         assert [e["event"] for e in seen] == ["run_start", "model_response", "run_end"]
 
+    def test_sandboxed_by_default(self, agents_dir, monkeypatch):
+        from harness.sandbox import default_sandbox
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        conv = orchestrator.new_conversation("base")
+        assert conv.toolset.context.sandbox == default_sandbox()
+        conv.turn("t")
+        start = __import__("json").loads(conv.session.trace_path(1).read_text().splitlines()[0])
+        assert start["sandbox"] == default_sandbox().name  # recorded in the trace
+
+    def test_sandbox_is_passed_through(self, agents_dir, monkeypatch):
+        from harness.sandbox import Unsandboxed
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        assert orchestrator.new_conversation("base", sandbox=Unsandboxed()).toolset.context.sandbox == Unsandboxed()
+
     def test_turns_share_the_session(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         client = FakeClient([reply("one"), reply("two")])

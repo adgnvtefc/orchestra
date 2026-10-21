@@ -31,7 +31,7 @@ def run_agent(task: str, session: Session, config: dict, client: OpenAI, toolset
 
     # run_start now. run_end comes from tracer.finish() below, or, if this function
     # raises, from the `with Tracer(...)` block of whoever created the tracer.
-    tracer.start(task, config, tools, approver=toolset.policy.name)
+    tracer.start(task, config, tools, approver=toolset.policy.name, sandbox=toolset.context.sandbox.name)
 
     # The conversation IS the agent's memory. Every turn we send all of it: the system
     # prompt, every earlier turn, and now this task.

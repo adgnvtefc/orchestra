@@ -7,6 +7,9 @@ import uuid
 from pathlib import Path
 
 from harness.tools.base import MAX_OUTPUT_CHARS
+from harness import sandbox
+from harness.sandbox import Seatbelt
+from harness.tools import ToolContext
 from harness.tools.base import ALLOWED_ENV, agent_env
 from harness.tools.builtin.shell import bash
 
@@ -114,3 +117,37 @@ class TestEnvironment:
     def test_missing_variables_are_simply_absent(self, monkeypatch):
         monkeypatch.delenv("LC_ALL", raising=False)
         assert "LC_ALL" not in agent_env()
+
+
+
+class TestSandboxed:
+    """bash with a Seatbelt sandbox in its context: confined to the workspace (macOS only)."""
+
+    pytestmark = __import__("pytest").mark.skipif(not sandbox.available(), reason="needs macOS sandbox-exec")
+
+    def sandboxed(self, workspace, **env):
+        return ToolContext(workspace, sandbox=Seatbelt(home=workspace.parent), env=env)
+
+    def test_runs_normally_in_the_workspace(self, workspace):
+        out = bash(self.sandboxed(workspace), "echo ok > f.txt && cat f.txt")
+        assert out.startswith("ok") and out.endswith("(exit code 0)")
+
+    def test_cannot_write_outside(self, workspace):
+        out = bash(self.sandboxed(workspace), "echo pwned > ../escape.txt")
+        assert "Operation not permitted" in out
+        assert not (workspace.parent / "escape.txt").exists()
+
+    def test_cannot_read_outside(self, workspace):
+        (workspace.parent / "secret.txt").write_text("TOP SECRET")
+        out = bash(self.sandboxed(workspace), "cat ../secret.txt")
+        assert "Operation not permitted" in out and "TOP SECRET" not in out
+
+    def test_sandbox_tmpdir_wins_over_the_environments(self, workspace):
+        out = bash(self.sandboxed(workspace, TMPDIR="/somewhere/else"), "echo $TMPDIR")
+        assert out.startswith(str(workspace.resolve() / ".tmp"))
+
+    def test_environment_variables_still_apply(self, workspace):
+        assert bash(self.sandboxed(workspace, GREETING="hello"), "echo $GREETING").startswith("hello")
+
+    def test_timeout_still_kills(self, workspace):
+        assert bash(self.sandboxed(workspace), "sleep 10", timeout=1) == "Command timed out after 1s and was killed."

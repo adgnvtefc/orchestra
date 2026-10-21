@@ -61,7 +61,7 @@ class Tracer:
 
     # ---- The trace format: one method per kind of event ----
 
-    def start(self, task: str, config: dict, tools: list[dict], approver: str) -> None:
+    def start(self, task: str, config: dict, tools: list[dict], approver: str, sandbox: str = "none") -> None:
         """run_start: everything needed to know what this run was set up to do, and what produced it."""
         self._started = time.monotonic()
         self.steps, self.tool_calls = 0, 0
@@ -72,6 +72,7 @@ class Tracer:
             config=config,
             tools=tools,
             approver=approver,
+            sandbox=sandbox,  # sandboxed and unsandboxed runs aren't comparable data
             provenance=provenance.collect(config),
         )
 

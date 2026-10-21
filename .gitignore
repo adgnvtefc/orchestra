@@ -22,5 +22,5 @@ htmlcov/
 # Old per-run traces, from before sessions existed (safe to delete)
 traces/
 
-# Agent sessions: conversations + their per-turn traces
+# Sessions from before they moved to ~/.orchestra/sessions (safe to move or delete)
 sessions/

@@ -5,6 +5,7 @@ import pytest
 from harness import config, orchestrator
 from harness.interfaces import cli
 from harness.policy import deny_all
+from harness.sandbox import Unsandboxed, default_sandbox
 from tests.fakes import FakeClient, reply
 
 
@@ -113,7 +114,7 @@ class TestMain:
         cli.main(["list", "the", "files"])
         assert run_calls == [
             {"task": "list the files", "agent_name": "base", "approver": cli.terminal_approver,
-             "workspace": None, "environment": None}
+             "sandbox": default_sandbox(), "workspace": None, "environment": None}
         ]
         assert capsys.readouterr().out.strip() == "printed answer"
 
@@ -134,6 +135,14 @@ class TestMain:
     def test_unattended_means_deny_all(self, run_calls):
         cli.main(["--unattended", "hi"])
         assert run_calls[0]["approver"] is deny_all
+
+    def test_sandboxed_by_default(self, run_calls):
+        cli.main(["hi"])
+        assert run_calls[0]["sandbox"] == default_sandbox()  # Seatbelt on macOS
+
+    def test_no_sandbox_flag(self, run_calls):
+        cli.main(["--no-sandbox", "hi"])
+        assert run_calls[0]["sandbox"] == Unsandboxed()
 
     def test_flags_after_task(self, run_calls):
         cli.main(["do", "it", "--unattended", "--agent", "reader"])

@@ -4,6 +4,7 @@ import pytest
 
 import json
 
+from harness.sandbox import Unsandboxed
 from harness.agent import run_agent
 from harness.session import MESSAGES_FILE, Session
 from harness.tools import ToolContext, Toolset
@@ -31,7 +32,7 @@ def run(replies, task="do the thing", tools=("echo",), tracer=None, session=None
         session or new_session(),
         {**CONFIG, **config_overrides},
         client,
-        Toolset(list(tools), NO_HUMAN, ToolContext(workspace=_sessions_root.parent / "workspace")),
+        Toolset(list(tools), NO_HUMAN, ToolContext(workspace=_sessions_root.parent / "workspace", sandbox=Unsandboxed())),
         tracer or Tracer(),
     )
     return answer, client

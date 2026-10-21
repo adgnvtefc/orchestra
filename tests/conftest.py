@@ -3,6 +3,7 @@
 import pytest
 
 from harness import orchestrator
+from harness.sandbox import Unsandboxed
 from harness.tools import REGISTRY, Tool, ToolContext
 
 
@@ -21,8 +22,9 @@ def workspace(tmp_path):
 
 @pytest.fixture
 def ctx(workspace):
-    """The ToolContext for calling tools directly: confined to the test's temp workspace."""
-    return ToolContext(workspace=workspace)
+    """The ToolContext for calling tools directly: confined to the test's temp workspace, no
+    sandbox (sandboxed bash has its own tests)."""
+    return ToolContext(workspace=workspace, sandbox=Unsandboxed())
 
 
 @pytest.fixture(autouse=True)

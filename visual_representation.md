@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-21, the agent loop prints nothing; the interface shows steps by listening to trace events
+**Last updated:** 2026-10-21, bash runs in a macOS sandbox; sessions live in ~/.orchestra/sessions
 
 ---
 
@@ -49,8 +49,8 @@ flowchart TD
 
     agentloop["Agent loop<br/>agent.py: run_agent()"]
     omlx[("oMLX server<br/>Qwen3.8-27B")]
-    ws[("the session's workspace<br/>sessions/&lt;id&gt;/workspace/ by default,<br/>or --workspace / workspace: in the agent file")]
-    sessions[("sessions/&lt;id&gt;/<br/>session.json, messages.jsonl,<br/>turn-001.jsonl, turn-002.jsonl, ...")]
+    ws[("the session's workspace<br/>~/.orchestra/sessions/&lt;id&gt;/workspace/ by default,<br/>or --workspace / workspace: in the agent file")]
+    sessions[("~/.orchestra/sessions/&lt;id&gt;/<br/>session.json, messages.jsonl,<br/>turn-001.jsonl, turn-002.jsonl, ...")]
 
     user --> cli
     run -->|reads| inputs
@@ -180,7 +180,7 @@ flowchart TD
 |---|---|---|---|
 | `read_file` | allow | Return a file's text | Paths can't leave the workspace; binary/empty files say so; long output truncated (head + tail) |
 | `write_file` | allow | Create or overwrite a file | Same path rule; creates parent folders |
-| `bash` | **ask** | Run a shell command in the workspace | Approval first; **allowlisted environment only** (no API keys, not the harness's own Python); stdin closed; timeout kills the whole process group; output truncated; exit code always reported |
+| `bash` | **ask** | Run a shell command in the workspace | Approval first; **runs in the macOS sandbox** (section 6); **allowlisted environment only** (no API keys, not the harness's own Python); stdin closed; timeout kills the whole process group; output truncated; exit code always reported |
 
 Every tool function takes a `ToolContext` first (today: just the workspace path). `Toolset`
 passes it on every call; it isn't in any schema, so the model can neither see nor set it.
@@ -224,7 +224,31 @@ prompt: |                               # appended to the system prompt automati
 
 ---
 
-## 6. Chat: many turns, one session
+## 6. The sandbox: what bash commands can touch
+
+`bash` asks `ctx.sandbox` to `prepare()` each command. On macOS the default is **Seatbelt**:
+the command runs under `sandbox-exec` with rules generated for its workspace, and the
+operating system enforces them. (`--no-sandbox` runs commands unconfined.)
+
+| | Allowed | Blocked |
+|---|---|---|
+| **Write** | the workspace, `/dev` | everywhere else (`/tmp`, your home folder, the harness) |
+| **Read contents** | everything outside your home folder; in home only the workspace and uv's Pythons | the rest of home: `~/.zshrc`, `~/.ssh`, the harness `.env`, other sessions, folder listings |
+| **Check existence** | everywhere (tools like pytest and git walk up the tree looking for config files) | |
+| **Network** | local sockets | the internet |
+
+Temp files go to `<workspace>/.tmp` (`TMPDIR`). Each run's trace records `sandbox` in `run_start`.
+`read_file`/`write_file` don't use the sandbox (they run inside the harness); `_resolve()`'s
+path check confines them instead.
+
+**Why sessions live in `~/.orchestra/sessions`, outside this project:** tools walk *up* from
+their folder looking for config. A workspace inside the harness project made git treat it as
+part of the harness repository, and pytest read the harness's `pyproject.toml`. Outside, each
+workspace is a clean folder. `~/projects/orchestra-sessions` is a symlink to it.
+
+---
+
+## 7. Chat: many turns, one session
 
 ```text
 $ harness chat                        $ harness chat --resume 2026-10-20T18-55-51_base_66ec
@@ -243,7 +267,7 @@ you> Add a fourth fruit to it ...     -> "mango", remembered from the earlier pr
 
 ---
 
-## 7. What the model sees: the conversation grows
+## 8. What the model sees: the conversation grows
 
 From a real run of `"Write primes.py that prints the first 10 primes, run it"`:
 
@@ -269,7 +293,7 @@ turn 2, request 1: [system] [user: turn 1 task] ... [assistant: turn 1 answer] [
 and later compaction may rewrite it); the trace is the *record* (everything, never rewritten).
 
 ```text
-sessions/2026-10-20T14-13-59_base_8569/
+~/.orchestra/sessions/2026-10-20T14-13-59_base_8569/     (also via ~/projects/orchestra-sessions)
   session.json      id, agent, agent_version, workspace, created: written once, never changed
   messages.jsonl    the conversation, one message per line
   turn-001.jsonl    trace of turn 1; the trace files are the only record of which turns happened
@@ -278,7 +302,7 @@ sessions/2026-10-20T14-13-59_base_8569/
 
 ---
 
-## 8. What a trace records
+## 9. What a trace records
 
 **The trace is also how interfaces see progress.** The agent loop never prints: it reports
 each event to the tracer, which writes it to the file and then calls any *listeners* with it.
@@ -286,7 +310,7 @@ each event to the tracer, which writes it to the file and then calls any *listen
 `show_step` prints each `tool_call` as it finishes. A web UI would attach a listener that
 streams events to the browser, with no change to the agent loop.
 
-One JSONL file per turn, inside its session: `sessions/<id>/turn-001.jsonl` (gitignored).
+One JSONL file per turn, inside its session: `~/.orchestra/sessions/<id>/turn-001.jsonl`.
 The format is defined in one place, `tracer.py`: the agent reports what happened
 (`start`, `model_response`, `tool_call`, `finish`), and the tracer decides what's recorded.
 One tracer = one turn = one file. The orchestrator owns it with `with Tracer(path) as tracer:`,
@@ -323,7 +347,7 @@ A hash *identifies* content; it doesn't store it.
 
 ---
 
-## 9. How the code is organized
+## 10. How the code is organized
 
 ```text
 src/harness/
@@ -332,7 +356,7 @@ src/harness/
   agent.py                      the loop
   providers/    omlx.py         reaching the model server: make_client, call_model
   tools/        base.py, toolset.py, builtin/{fs,shell}.py
-  policy.py  config.py  environment.py  session.py  tracer.py  provenance.py
+  policy.py  config.py  environment.py  session.py  tracer.py  provenance.py  sandbox.py
 ```
 
 Arrows mean "imports". They only point one way: nothing imports an interface,
@@ -345,6 +369,7 @@ flowchart TD
     orch["orchestrator.py<br/>control plane: Conversation,<br/>no terminal I/O"] --> agent["agent.py<br/>the loop"]
     orch --> loader["config.py<br/>reads + resolves agents/ and<br/>environments/ into a RunConfig"]
     orch --> providers["providers/omlx.py<br/>make_client, call_model"]
+    base --> sandboxmod["sandbox.py<br/>Seatbelt: confine bash"]
     agent --> providers
     loader --> envmod
     loader --> tools_api
@@ -375,6 +400,6 @@ What's planned, in rough order. Each becomes a diagram change when it lands.
 
 - **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
-- **Sandbox:** `bash` runs in a container; then a `--yes` mode can auto-approve safely.
+- **`--yes`:** auto-approve tool calls, allowed only when sandboxed (unlocks unattended runs and evals).
 - **Context management:** compaction when the conversation nears the 32k window.
 - **Provider adapters:** oMLX and native Anthropic behind one interface.

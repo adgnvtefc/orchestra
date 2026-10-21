@@ -29,7 +29,7 @@ from pathlib import Path
 
 import yaml
 
-from harness.tools.base import ToolContext
+from harness.tools.base import command_env
 
 ALLOWED_KEYS = {"description", "files", "setup", "env", "prompt"}
 MARKER = Path(".harness") / "environment.json"
@@ -131,7 +131,7 @@ def provision(environment: Environment, workspace: Path) -> bool:
         # dirs_exist_ok + copy only what's missing: never overwrite a file already in the workspace
         shutil.copytree(environment.files, workspace, dirs_exist_ok=True, copy_function=_copy_if_missing)
 
-    env = ToolContext(workspace, environment.variables(workspace)).command_env()
+    env = command_env(environment.variables(workspace))
     for command in environment.setup:
         try:
             result = subprocess.run(

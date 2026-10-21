@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from harness.policy import Permission
+from harness.sandbox import Seatbelt, Unsandboxed
 
 # ~10k chars is roughly 2.5k tokens: enough to be useful, small enough that one
 # tool result can't eat a 32k context window.
@@ -33,6 +34,22 @@ def agent_env() -> dict[str, str]:
     return env
 
 
+def command_env(variables: dict[str, str]) -> dict[str, str]:
+    """The environment shell commands run with: agent_env() plus an environment's `variables`.
+    PATH is prepended to (so the environment's tools win); every other variable is set.
+
+    Used both by the agent's bash (via ToolContext) and by environment setup commands, so the
+    two always see the same thing.
+    """
+    env = agent_env()
+    for name, value in variables.items():
+        if name == "PATH" and env.get("PATH"):
+            env["PATH"] = f"{value}{os.pathsep}{env['PATH']}"
+        else:
+            env[name] = value
+    return env
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """What a tool call runs *in*, as opposed to what it was asked to do (the arguments).
@@ -42,18 +59,14 @@ class ToolContext:
     """
 
     workspace: Path  # all file access and shell commands are confined to this directory
+    # How bash runs commands. Required, with no default: whoever builds a context has to say
+    # which one, so nothing ends up unsandboxed by forgetting. (Unsandboxed() is a choice.)
+    sandbox: Seatbelt | Unsandboxed
     env: dict[str, str] = field(default_factory=dict)  # extra variables from the session's environment
 
     def command_env(self) -> dict[str, str]:
-        """The environment shell commands run with: agent_env() plus this context's variables.
-        PATH is prepended to (so the environment's tools win); every other variable is set."""
-        env = agent_env()
-        for name, value in self.env.items():
-            if name == "PATH" and env.get("PATH"):
-                env["PATH"] = f"{value}{os.pathsep}{env['PATH']}"
-            else:
-                env[name] = value
-        return env
+        """The environment shell commands run with: see command_env()."""
+        return command_env(self.env)
 
 
 # makes so cannot modify after creation

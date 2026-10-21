@@ -7,6 +7,7 @@ import pytest
 from harness import environment as environment_module
 from harness.environment import MARKER, EnvironmentSetupError, load_environment, provision
 from harness.tools import ToolContext
+from harness.tools.base import command_env
 
 
 @pytest.fixture
@@ -181,21 +182,26 @@ class TestProvision:
 
 
 class TestCommandEnv:
-    """ToolContext.command_env(): what both setup commands and the agent's bash run with."""
+    """command_env(): what both setup commands and the agent's bash run with."""
 
     def test_path_is_prepended(self, workspace, monkeypatch):
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
-        env = ToolContext(workspace, {"PATH": "/ws/.venv/bin"}).command_env()
+        env = command_env({"PATH": "/ws/.venv/bin"})
         assert env["PATH"].startswith("/ws/.venv/bin:")
         assert env["PATH"].endswith("/usr/bin:/bin")
 
     def test_other_variables_are_set(self, workspace):
-        assert ToolContext(workspace, {"VIRTUAL_ENV": "/ws/.venv"}).command_env()["VIRTUAL_ENV"] == "/ws/.venv"
+        assert command_env({"VIRTUAL_ENV": "/ws/.venv"})["VIRTUAL_ENV"] == "/ws/.venv"
 
     def test_still_allowlisted(self, workspace, monkeypatch):
         monkeypatch.setenv("OMLX_API_KEY", "sk-secret")
-        assert "OMLX_API_KEY" not in ToolContext(workspace, {"X": "1"}).command_env()
+        assert "OMLX_API_KEY" not in command_env({"X": "1"})
 
     def test_no_variables_is_plain_agent_env(self, workspace):
         from harness.tools.base import agent_env
-        assert ToolContext(workspace).command_env() == agent_env()
+        assert command_env({}) == agent_env()
+
+    def test_tool_context_uses_the_same_function(self, workspace):
+        from harness.sandbox import Unsandboxed
+        context = ToolContext(workspace, sandbox=Unsandboxed(), env={"X": "1"})
+        assert context.command_env() == command_env({"X": "1"})
