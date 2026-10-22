@@ -9,6 +9,9 @@
           PATH: "{workspace}/.venv/bin"  # PATH is prepended to; {workspace} is filled in
         prompt: |                       # added to the agent's system prompt automatically
           Your workspace has ...
+        sandbox:                        # what its commands need, inside the sandbox
+          readable: [~/.local/share/uv] #   extra folders in home they may read (the .venv's Python)
+          network: false                #   outbound internet (default: no)
 
 The harness sets the environment up, not the agent: setup is deterministic and costs
 the agent no steps. Setup commands run without approval, because they come from a
@@ -29,9 +32,10 @@ from pathlib import Path
 
 import yaml
 
+from harness.sandbox import SandboxRules
 from harness.tools.base import command_env
 
-ALLOWED_KEYS = {"description", "files", "setup", "env", "prompt"}
+ALLOWED_KEYS = {"description", "files", "setup", "env", "prompt", "sandbox"}
 MARKER = Path(".harness") / "environment.json"
 SETUP_TIMEOUT = 600  # seconds per setup command; installs can be slow the first time
 
@@ -55,6 +59,7 @@ class Environment:
     setup: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     prompt: str = ""
+    sandbox: SandboxRules = SandboxRules()  # what its commands need inside the sandbox
 
     def variables(self, workspace: Path) -> dict[str, str]:
         """The extra environment variables for agent commands, with {workspace} filled in."""
@@ -97,7 +102,16 @@ def load_environment(environments_dir: Path, name: str, project_root: Path) -> E
         setup=tuple(setup),
         env=env,
         prompt=(spec.get("prompt") or "").strip(),
+        sandbox=_sandbox_rules(path, spec.get("sandbox") or {}, project_root),
     )
+
+
+def _sandbox_rules(path: Path, spec: object, project_root: Path) -> SandboxRules:
+    """The sandbox: section, read by SandboxRules itself. Relative paths are from the project root."""
+    try:
+        return SandboxRules.from_dict(spec, relative_to=project_root)
+    except ValueError as e:
+        raise EnvironmentSetupError(f"{path}: sandbox: {e}") from None
 
 
 def _version(spec_text: str, files: Path | None) -> str:

@@ -158,5 +158,8 @@ def build_toolset(
     Built from the session (not the config) so a resumed session works on the same folder
     with the same variables it started with.
     """
-    context = ToolContext(workspace=session.workspace, env=session.environment_variables, sandbox=sandbox)
+    # the interface chose whether to sandbox; the session's environment says what its commands need
+    context = ToolContext(
+        workspace=session.workspace, env=session.environment_variables, sandbox=sandbox.with_rules(session.sandbox_rules)
+    )
     return Toolset(tools, Policy(approver), context, project.tools())

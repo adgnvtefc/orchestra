@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from harness import sandbox
-from harness.sandbox import TOOLCHAINS, Seatbelt, Unsandboxed, seatbelt_profile
+from harness.sandbox import SandboxRules, Seatbelt, Unsandboxed, seatbelt_profile
 
 macos_only = pytest.mark.skipif(not sandbox.available(), reason="needs macOS sandbox-exec")
 
@@ -21,7 +21,7 @@ def layout(tmp_path):
     workspace.mkdir(parents=True)
     (home / "secret.txt").write_text("TOP SECRET\n")
     (home / "project" / ".env").write_text("OMLX_API_KEY=sk-x\n")
-    toolchain = home / TOOLCHAINS[0]
+    toolchain = home / ".local" / "share" / "uv"
     toolchain.mkdir(parents=True)
     (toolchain / "python.txt").write_text("toolchain\n")
     (root / "outside").mkdir()
@@ -115,8 +115,13 @@ class TestReads:
         code, out = run(Seatbelt(home=layout.home), "git status", layout.workspace)
         assert "not a git repository" in out
 
-    def test_toolchains_are_readable(self, layout):
-        assert run(Seatbelt(home=layout.home), f"cat {layout.toolchain / 'python.txt'}", layout.workspace) == (0, "toolchain")
+    def test_toolchains_need_to_be_allowed(self, layout):
+        # Nothing in home is readable by default, toolchains included...
+        code, out = run(Seatbelt(home=layout.home), f"cat {layout.toolchain / 'python.txt'}", layout.workspace)
+        assert code != 0 and "Operation not permitted" in out
+        # ...until the environment's rules allow it.
+        allowed = Seatbelt(home=layout.home).with_rules(SandboxRules(readable=(layout.toolchain,)))
+        assert run(allowed, f"cat {layout.toolchain / 'python.txt'}", layout.workspace) == (0, "toolchain")
 
     def test_system_tools_work(self, layout):
         code, out = run(Seatbelt(home=layout.home), 'python3 -c "print(6 * 7)" && git --version', layout.workspace)
@@ -143,6 +148,10 @@ class TestNetwork:
     def test_profile_allows_when_asked(self, layout):
         assert "network" not in seatbelt_profile(layout.workspace, home=layout.home, network=True)
 
+    def test_rules_turn_network_on(self, layout):
+        allowed = Seatbelt(home=layout.home).with_rules(SandboxRules(network=True))
+        assert allowed.network is True
+
 
 class TestProfile:
     def test_last_rule_wins_order(self, tmp_path):
@@ -163,6 +172,43 @@ class TestProfile:
         workspace = tmp_path.resolve() / 'a "quoted" folder'
         workspace.mkdir()
         assert run(Seatbelt(home=tmp_path.resolve()), "echo ok > f.txt && cat f.txt", workspace) == (0, "ok")
+
+
+class TestRules:
+    def test_default_needs_nothing(self):
+        assert SandboxRules() == SandboxRules(readable=(), network=False)
+
+    def test_written_form_round_trips(self, tmp_path):
+        rules = SandboxRules(readable=(tmp_path.resolve() / "tool",), network=True)
+        assert rules.to_dict() == {"readable": [str(tmp_path.resolve() / "tool")], "network": True}
+        assert SandboxRules.from_dict(rules.to_dict()) == rules
+
+    def test_from_dict_paths(self, tmp_path):
+        rules = SandboxRules.from_dict({"readable": ["~/.local/share/uv", "rel/bin"]}, relative_to=tmp_path)
+        assert rules.readable == ((Path.home() / ".local/share/uv").resolve(), (tmp_path / "rel" / "bin").resolve())
+
+    def test_from_dict_empty_means_nothing(self):
+        assert SandboxRules.from_dict({}) == SandboxRules()
+
+    @pytest.mark.parametrize(("data", "error"), [
+        ("yes", "must be 'key: value' lines"),
+        ({"netwrok": True}, "unknown key"),
+        ({"readable": "~/x"}, "readable must be a list"),
+        ({"network": "sometimes"}, "network must be true or false"),
+    ])
+    def test_from_dict_rejects(self, data, error):
+        with pytest.raises(ValueError, match=error):
+            SandboxRules.from_dict(data)
+
+    @macos_only
+    def test_with_rules_returns_a_new_sandbox(self, tmp_path):
+        base = Seatbelt(home=tmp_path)
+        loosened = base.with_rules(SandboxRules(readable=(tmp_path / "tool",), network=True))
+        assert (base.network, base.readable) == (False, ())  # the original is unchanged (frozen)
+        assert (loosened.network, loosened.readable, loosened.home) == (True, (tmp_path / "tool",), tmp_path)
+
+    def test_unsandboxed_ignores_rules(self):
+        assert Unsandboxed().with_rules(SandboxRules(network=True)) == Unsandboxed()
 
 
 class TestUnsandboxed:

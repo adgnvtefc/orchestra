@@ -1,11 +1,13 @@
 """Environments: loading and validating specs, versions, and provisioning workspaces."""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from harness import environment as environment_module
 from harness.environment import MARKER, EnvironmentSetupError, load_environment, provision
+from harness.sandbox import SandboxRules
 from harness.tools import ToolContext
 from harness.tools.base import command_env
 
@@ -92,6 +94,35 @@ class TestLoad:
     def test_variables_fill_in_workspace(self, envs, tmp_path):
         envs.write("simple", SIMPLE)
         assert envs.load("simple").variables(tmp_path)["PATH"] == f"{tmp_path}/bin"
+
+
+class TestSandboxRules:
+    def test_none_given_means_nothing_extra(self, envs):
+        envs.write("simple", SIMPLE)
+        assert envs.load("simple").sandbox == SandboxRules()
+
+    def test_readable_and_network(self, envs):
+        envs.write("net", "sandbox:\n  readable: [~/.local/share/uv, tools/bin]\n  network: true\n")
+        rules = envs.load("net").sandbox
+        assert rules.network is True
+        assert rules.readable == ((Path.home() / ".local/share/uv").resolve(), (envs.root / "tools" / "bin").resolve())
+
+    @pytest.mark.parametrize(("text", "error"), [
+        ("sandbox: yes\n", "sandbox: must be 'key: value' lines"),
+        ("sandbox:\n  netwrok: true\n", "sandbox: unknown key"),
+        ("sandbox:\n  readable: ~/x\n", "sandbox: readable must be a list"),
+        ("sandbox:\n  network: sometimes\n", "sandbox: network must be true or false"),
+    ])
+    def test_invalid(self, envs, text, error):
+        envs.write("bad", text)
+        with pytest.raises(EnvironmentSetupError, match=error):
+            envs.load("bad")
+
+    def test_rules_change_the_version(self, envs):
+        envs.write("e", "sandbox:\n  network: false\n")
+        before = envs.load("e").version
+        envs.write("e", "sandbox:\n  network: true\n")
+        assert envs.load("e").version != before
 
 
 class TestVersion:

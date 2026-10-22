@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-22, Project: where config comes from, plus the project's own tools
+**Last updated:** 2026-10-22, sandbox rules come from the environment file
 
 ---
 
@@ -235,9 +235,14 @@ operating system enforces them. (`--no-sandbox` runs commands unconfined.)
 | | Allowed | Blocked |
 |---|---|---|
 | **Write** | the workspace, `/dev` | everywhere else (`/tmp`, your home folder, the harness) |
-| **Read contents** | everything outside your home folder; in home only the workspace and uv's Pythons | the rest of home: `~/.zshrc`, `~/.ssh`, the harness `.env`, other sessions, folder listings |
+| **Read contents** | everything outside your home folder; in home only the workspace and the environment's `sandbox.readable` (python-dev: uv's Pythons) | the rest of home: `~/.zshrc`, `~/.ssh`, the harness `.env`, other sessions, folder listings |
 | **Check existence** | everywhere (tools like pytest and git walk up the tree looking for config files) | |
-| **Network** | local sockets | the internet |
+| **Network** | local sockets; the internet if the environment sets `sandbox.network: true` | the internet, by default |
+
+**Who decides what:** the interface decides *whether* there's a sandbox (Seatbelt, or none with
+`--no-sandbox`); the session's environment decides *what its commands need* (the `sandbox:`
+section of its file, recorded in `session.json` when the session is created). `build_toolset`
+combines them: `sandbox.with_rules(session.sandbox_rules)`.
 
 Temp files go to `<workspace>/.tmp` (`TMPDIR`). Each run's trace records `sandbox` in `run_start`.
 

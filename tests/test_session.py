@@ -2,10 +2,12 @@
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
 from harness.environment import Environment
+from harness.sandbox import SandboxRules
 from harness.session import INTERRUPTED, MESSAGES_FILE, SESSION_FILE, Session, new_session_id
 
 
@@ -98,7 +100,10 @@ class TestWorkspace:
         assert Session.load(root, session.id).workspace == project.resolve()
 
 
-ENV = Environment(name="py", version="abc", env={"PATH": "{workspace}/.venv/bin", "X": "1"})
+ENV = Environment(
+    name="py", version="abc", env={"PATH": "{workspace}/.venv/bin", "X": "1"},
+    sandbox=SandboxRules(readable=(Path("/opt/toolchain"),), network=True),
+)
 
 
 class TestEnvironmentRecord:
@@ -106,12 +111,29 @@ class TestEnvironmentRecord:
         session = Session.create(root, "base", "p", "v", environment=ENV)
         assert json.loads((session.dir / SESSION_FILE).read_text())["environment"] == {
             "name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"},
+            "sandbox": {"readable": ["/opt/toolchain"], "network": True},
         }
 
     def test_variables_filled_in_on_read(self, root):
         session = Session.create(root, "base", "p", "v", environment=ENV)
         assert session.environment_variables == {"PATH": f"{session.workspace}/.venv/bin", "X": "1"}
         assert Session.load(root, session.id).environment_variables == session.environment_variables
+
+    def test_sandbox_rules_survive_reload(self, root):
+        session = Session.create(root, "base", "p", "v", environment=ENV)
+        assert Session.load(root, session.id).sandbox_rules == SandboxRules(readable=(Path("/opt/toolchain"),), network=True)
+
+    def test_older_sessions_keep_what_they_used_to_get(self, root):
+        # Sessions recorded before sandbox rules existed must still resume with a working .venv.
+        session = Session.create(root, "base", "p", "v", environment=ENV)
+        meta = json.loads((session.dir / SESSION_FILE).read_text())
+        del meta["environment"]["sandbox"]
+        (session.dir / SESSION_FILE).write_text(json.dumps(meta))
+        rules = Session.load(root, session.id).sandbox_rules
+        assert rules == SandboxRules(readable=(Path.home() / ".local" / "share" / "uv",))
+
+    def test_no_environment_no_sandbox_rules(self, session):
+        assert session.sandbox_rules == SandboxRules()
 
     def test_no_environment_no_variables(self, session):
         assert session.environment_variables == {}

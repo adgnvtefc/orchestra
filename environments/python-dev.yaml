@@ -8,3 +8,7 @@ env:
 prompt: |
   Your workspace has a Python 3.12 virtualenv in .venv with pytest installed.
   `python`, `pip`, and `pytest` already point at it; use them directly.
+sandbox:
+  readable:
+    - ~/.local/share/uv     # the uv-installed Python that .venv links to
+  network: false

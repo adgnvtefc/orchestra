@@ -378,6 +378,18 @@ class TestConversation:
         after = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
         assert after == before  # nothing was created
 
+    def test_environment_sandbox_rules_are_applied(self, agents_dir, tmp_path, monkeypatch):
+        from harness.sandbox import Seatbelt, available
+        if not available():
+            pytest.skip("needs macOS sandbox-exec")
+        (tmp_path / "environments").mkdir()
+        (tmp_path / "environments" / "net.yaml").write_text("sandbox:\n  readable: [/opt/x]\n  network: true\n")
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))
+        conv = orchestrator.new_conversation("base", environment="net", sandbox=Seatbelt())
+        sandbox = conv.toolset.context.sandbox
+        assert (sandbox.network, sandbox.readable) == (True, (Path("/opt/x"),))  # the interface's Seatbelt + the env's rules
+
     def test_sandbox_is_passed_through(self, agents_dir, monkeypatch):
         from harness.sandbox import Unsandboxed
         write_agent(agents_dir, "base")

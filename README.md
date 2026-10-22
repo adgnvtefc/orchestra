@@ -113,7 +113,9 @@ answer=$(uv run harness --yes "What is 17 * 23? Just the number." 2>/dev/null)
 | `bash` | no: asks y/N (or `--yes` / `--unattended`) | the **sandbox** (on by default on macOS) |
 
 The sandbox lets bash commands write only inside the workspace, read nothing in your home
-folder except the workspace (and uv's Pythons), and use no network. Details: section 6 of
+folder except the workspace (plus what the session's environment lists under `sandbox:`,
+e.g. uv's Pythons), and use the network only if the environment allows it. You decide
+*whether* there's a sandbox (`--no-sandbox`); the environment decides *what's allowed* in it. Details: section 6 of
 [visual_representation.md](visual_representation.md).
 
 ## Config files
@@ -157,6 +159,9 @@ env:                                                 # optional: extra variables
   VIRTUAL_ENV: "{workspace}/.venv"
 prompt: |                                            # optional: appended to the agent's system prompt
   Your workspace has a Python 3.12 virtualenv in .venv with pytest installed.
+sandbox:                                             # optional: what its commands need inside the sandbox
+  readable: [~/.local/share/uv]                      #   folders in your home they may read (here: .venv's Python)
+  network: false                                     #   outbound internet (default false)
 ```
 
 Only these keys are allowed (a typo is an error). A workspace already set up with a

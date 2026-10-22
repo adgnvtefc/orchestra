@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from harness.environment import Environment, fill_workspace
+from harness.sandbox import SandboxRules
 
 SESSION_FILE = "session.json"
 MESSAGES_FILE = "messages.jsonl"
@@ -86,6 +87,17 @@ class Session:
         return fill_workspace(variables, self.workspace)
 
     @property
+    def sandbox_rules(self) -> SandboxRules:
+        """What this session's commands may do beyond the workspace, fixed when it was created
+        (so editing the environment file later doesn't loosen or tighten an existing session)."""
+        environment = self.meta.get("environment") or {}
+        if environment and "sandbox" not in environment:
+            # Recorded before environments had sandbox rules (2026-10-22): back then every
+            # sandboxed command could read uv's Pythons, which these sessions' .venvs rely on.
+            return SandboxRules(readable=(Path.home() / ".local" / "share" / "uv",))
+        return SandboxRules.from_dict(environment.get("sandbox") or {})
+
+    @property
     def next_turn(self) -> int:
         """One past the number of turn traces on disk, however those turns ended."""
         return len(list(self.dir.glob("turn-*.jsonl"))) + 1
@@ -130,7 +142,12 @@ class Session:
             "workspace": str(workspace.resolve()),
             "config_root": str(config_root.resolve()) if config_root else None,
             "environment": (
-                {"name": environment.name, "version": environment.version, "variables": environment.env}
+                {
+                    "name": environment.name,
+                    "version": environment.version,
+                    "variables": environment.env,
+                    "sandbox": environment.sandbox.to_dict(),
+                }
                 if environment else None
             ),
             "created": _now(),
