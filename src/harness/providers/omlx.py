@@ -12,20 +12,25 @@ belongs here too, but it's designed when a second provider exists to compare aga
 import os
 from collections.abc import Sequence
 
-from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 
 
-def make_client() -> OpenAI:
-    """Load .env and return an OpenAI client pointed at oMLX (OMLX_BASE_URL, OMLX_API_KEY)."""
-    # reads .env, copies each KEY=value into process env, os.environ can see all
-    load_dotenv()
+class MissingAPIKey(Exception):
+    """The model server's API key isn't set. An ordinary exception, so a program using the
+    harness can catch it; only an interface (the CLI) decides to exit over it."""
 
+
+def make_client() -> OpenAI:
+    """Return an OpenAI client pointed at oMLX, from OMLX_BASE_URL and OMLX_API_KEY.
+
+    Only *reads* environment variables. Loading a .env file into them is the interface's
+    job (the CLI does it): a library shouldn't change its host program's environment.
+    """
     # get the api key
     api_key = os.environ.get("OMLX_API_KEY")
     if not api_key:
-        raise SystemExit("OMLX_API_KEY is not set. Copy .env.example to .env and fill it in.")
+        raise MissingAPIKey("OMLX_API_KEY is not set: put it in .env (see .env.example) or in the environment")
     return OpenAI(
         base_url=os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
         api_key=api_key,

@@ -2,27 +2,35 @@
 
 import pytest
 
-from harness.providers import call_model, omlx
+from harness.providers import MissingAPIKey, call_model, omlx
 from tests.fakes import FakeClient, reply
 
 
 @pytest.fixture
 def env(monkeypatch):
     """A controlled environment: the real .env is never read, and OMLX_* vars start unset."""
-    monkeypatch.setattr(omlx, "load_dotenv", lambda: None)
     monkeypatch.delenv("OMLX_API_KEY", raising=False)
     monkeypatch.delenv("OMLX_BASE_URL", raising=False)
     return monkeypatch
 
 
 class TestMakeClient:
-    def test_missing_key_exits_with_help(self, env):
-        with pytest.raises(SystemExit, match="OMLX_API_KEY is not set"):
+    def test_missing_key_is_an_ordinary_exception(self, env):
+        # A program using the harness can catch it; SystemExit would have ended that program.
+        with pytest.raises(MissingAPIKey, match="OMLX_API_KEY is not set"):
+            omlx.make_client()
+        assert issubclass(MissingAPIKey, Exception)
+
+    def test_does_not_read_dotenv_files(self, env, tmp_path, monkeypatch):
+        # Loading .env is the interface's job; the provider only reads the environment.
+        (tmp_path / ".env").write_text("OMLX_API_KEY=from-a-file\n")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(MissingAPIKey):
             omlx.make_client()
 
     def test_empty_key_counts_as_missing(self, env):
         env.setenv("OMLX_API_KEY", "")
-        with pytest.raises(SystemExit):
+        with pytest.raises(MissingAPIKey):
             omlx.make_client()
 
     def test_default_base_url(self, env):

@@ -254,6 +254,21 @@ class TestMain:
         assert run_calls[0]["task"] == "from argv"
 
 
+class TestApiKey:
+    def test_cli_loads_dotenv(self, agents_dir, monkeypatch, no_dotenv):
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("ok")]))
+        cli.main(["hi"])
+        assert len(no_dotenv) == 1  # the CLI (the interface) loads .env, once
+
+    def test_missing_key_is_a_clean_usage_error(self, agents_dir, sessions_dir, monkeypatch, capsys):
+        monkeypatch.delenv("OMLX_API_KEY", raising=False)
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main(["hi"])
+        assert exit_info.value.code == 2
+        assert "OMLX_API_KEY is not set" in capsys.readouterr().err
+        assert not sessions_dir.exists() or not any(sessions_dir.iterdir())  # nothing was created
+
+
 class TestRunOutput:
     """`harness "task"` end to end: the answer on stdout, everything else on stderr."""
 
@@ -285,3 +300,64 @@ class TestRunOutput:
         with pytest.raises(AssertionError):
             cli.main(["say", "hi"])
         assert "session:" in capsys.readouterr().err
+
+
+class TestProjectTools:
+    """The CLI runs agents that use a project's own tools, from the project's tools.py."""
+
+    TOOLS_PY = (
+        "from harness.tools import Tool\n"
+        "def weather(ctx, city: str) -> str:\n"
+        "    return f'sunny in {city}'\n"
+        "TOOLS = [Tool(fn=weather, permission='allow', schema={'type': 'function', 'function': {\n"
+        "    'name': 'weather', 'description': 'the weather',\n"
+        "    'parameters': {'type': 'object', 'properties': {'city': {'type': 'string'}}, 'required': ['city']}}})]\n"
+    )
+
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - weather\n---\nP\n")
+        (tmp_path / "tools.py").write_text(self.TOOLS_PY)
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def weather_then_answer(self, monkeypatch):
+        from tests.fakes import call
+        client = FakeClient([reply(tool_calls=[call("weather", {"city": "Paris"})]), reply("It's sunny.")])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        return client
+
+    def test_run_uses_the_projects_tool(self, project, monkeypatch, capsys):
+        client = self.weather_then_answer(monkeypatch)
+        cli.main(["weather in Paris?"])
+        assert capsys.readouterr().out.strip() == "It's sunny."
+        assert client.requests[1]["messages"][-1]["content"] == "sunny in Paris"  # the project's tool ran
+
+    def test_config_root_flag_loads_them_too(self, project, monkeypatch, tmp_path, capsys):
+        client = self.weather_then_answer(monkeypatch)
+        elsewhere = tmp_path.parent
+        monkeypatch.chdir(elsewhere)
+        cli.main(["--config-root", str(project), "weather in Paris?"])
+        assert client.requests[1]["messages"][-1]["content"] == "sunny in Paris"
+
+    def test_resume_finds_them(self, project, monkeypatch, typed):
+        client = self.weather_then_answer(monkeypatch)
+        typed("weather in Paris?")
+        cli.main(["chat"])
+        (session_dir,) = list(orchestrator.SESSIONS_DIR.iterdir())
+        session_id = session_dir.name
+        monkeypatch.chdir(project.parent)  # resume from somewhere else: the session knows its project
+        from tests.fakes import call
+        client2 = FakeClient([reply(tool_calls=[call("weather", {"city": "Rome"})]), reply("ok")])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: client2)
+        typed("and Rome?")
+        cli.main(["chat", "--resume", session_id])
+        assert client2.requests[1]["messages"][-1]["content"] == "sunny in Rome"
+
+    def test_broken_tools_py_is_a_usage_error(self, project, capsys):
+        (project / "tools.py").write_text("TOOLS = 'nope'\n")
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main(["hi"])
+        assert exit_info.value.code == 2
+        assert "must define TOOLS" in capsys.readouterr().err

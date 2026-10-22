@@ -243,3 +243,63 @@ class TestProject:
         project = Project.find(tmp_path, [weather])
         assert project.extra_tools == (weather,)
         assert "weather" in project.tools() and "bash" in project.tools()
+
+
+TOOLS_PY = '''
+from harness.tools import Tool
+
+def weather(ctx, city: str) -> str:
+    return f"sunny in {city}"
+
+TOOLS = [Tool(fn=weather, permission="allow", schema={"type": "function", "function": {
+    "name": "weather", "description": "the weather",
+    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}})]
+'''
+
+
+class TestProjectToolsFile:
+    """A project's tools.py, defining TOOLS, is how the CLI (and Project.find) get its own tools."""
+
+    def project(self, tmp_path, tools_py=TOOLS_PY):
+        (tmp_path / "agents").mkdir(exist_ok=True)
+        if tools_py is not None:
+            (tmp_path / "tools.py").write_text(tools_py)
+        return tmp_path
+
+    def test_find_loads_tools_py(self, tmp_path):
+        project = Project.find(self.project(tmp_path))
+        assert [t.name for t in project.extra_tools] == ["weather"]
+        assert "weather" in project.tools() and "bash" in project.tools()
+        assert project.tools()["weather"].fn(None, "Paris") == "sunny in Paris"
+
+    def test_at_loads_tools_py(self, tmp_path):
+        assert [t.name for t in Project.at(self.project(tmp_path)).extra_tools] == ["weather"]
+
+    def test_plain_constructor_loads_nothing(self, tmp_path):
+        # Project(root) is a value; only at()/find() read the project's files.
+        assert Project(self.project(tmp_path)).extra_tools == ()
+
+    def test_no_tools_py(self, tmp_path):
+        assert Project.find(self.project(tmp_path, tools_py=None)).extra_tools == ()
+
+    def test_passed_tools_are_added(self, tmp_path):
+        from harness.tools import Tool
+        extra = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "extra"}}, permission="allow")
+        assert [t.name for t in Project.find(self.project(tmp_path), [extra]).extra_tools] == ["weather", "extra"]
+
+    @pytest.mark.parametrize(("tools_py", "error"), [
+        ("x = 1\n", "must define TOOLS"),
+        ("TOOLS = ['not a tool']\n", "must define TOOLS"),
+        ("import not_a_real_module_xyz\n", "couldn't be loaded: ModuleNotFoundError"),
+        ("def broken(:\n", "couldn't be loaded: SyntaxError"),
+    ])
+    def test_problems_name_the_file(self, tmp_path, tools_py, error):
+        from harness.config import ProjectToolsError
+        with pytest.raises(ProjectToolsError, match=error) as err:
+            Project.find(self.project(tmp_path, tools_py))
+        assert "tools.py" in str(err.value)
+
+    def test_agent_can_use_them(self, tmp_path):
+        root = self.project(tmp_path)
+        (root / "agents" / "forecaster.md").write_text("---\nmodel: m\ntools:\n  - weather\n---\nP\n")
+        assert resolve_run_config("forecaster", Project.find(root)).agent["tools"] == ["weather"]

@@ -26,26 +26,6 @@ def write_agent(directory, model="m", tools=("echo",)):
 
 
 @pytest.fixture
-def typed(monkeypatch):
-    """Script what the human types at `you>`. When the script runs out, it's Ctrl-D."""
-
-    def install(*lines):
-        remaining = list(lines)
-
-        def fake_input(prompt=""):
-            if not remaining:
-                raise EOFError
-            item = remaining.pop(0)
-            if isinstance(item, type) and issubclass(item, BaseException):
-                raise item
-            return item
-
-        monkeypatch.setattr("builtins.input", fake_input)
-
-    return install
-
-
-@pytest.fixture
 def model(monkeypatch):
     """Script the model's replies for the whole chat; returns the FakeClient."""
 

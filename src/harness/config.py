@@ -5,10 +5,12 @@ Everything a run is configured by goes through resolve_run_config(), so a typo i
 of it fails before anything is created.
 
 A Project is where config comes from: a folder with agents/ (and optionally
-environments/), plus any tools of its own. Project.find() locates the folder by walking
-up from where you are, the way git finds .git. So any project can have its own.
+environments/, and a tools.py defining TOOLS), plus any tools passed in. Project.find()
+locates the folder by walking up from where you are, the way git finds .git. So any
+project can have its own.
 """
 
+import importlib.util
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +19,13 @@ import yaml
 
 from harness.environment import Environment, load_environment
 from harness.tools import Tool, Toolset, available_tools
+
+
+PROJECT_TOOLS_FILE = "tools.py"
+
+
+class ProjectToolsError(ValueError):
+    """A project's tools.py couldn't be loaded, or doesn't define TOOLS properly."""
 
 
 @dataclass(frozen=True)
@@ -31,12 +40,22 @@ class Project:
     extra_tools: tuple[Tool, ...] = ()  # the project's own tools, alongside the built-ins
 
     @classmethod
+    def at(cls, root: Path, extra_tools: Sequence[Tool] = ()) -> "Project":
+        """The project in `root`: its tools.py's TOOLS (if it has one) plus `extra_tools`.
+
+        (Project(root) itself loads nothing: it's a plain value. This is the one that reads
+        the project's files.)
+        """
+        root = root.resolve()
+        return cls(root, load_project_tools(root) + tuple(extra_tools))
+
+    @classmethod
     def find(cls, start: Path, extra_tools: Sequence[Tool] = ()) -> "Project":
-        """The nearest folder at or above `start` that has an agents/ folder."""
+        """The nearest folder at or above `start` that has an agents/ folder, loaded with Project.at()."""
         start = start.resolve()
         for folder in (start, *start.parents):
             if (folder / "agents").is_dir():
-                return cls(folder, tuple(extra_tools))
+                return cls.at(folder, extra_tools)
         raise FileNotFoundError(f"no agents/ folder in {start} or any folder above it")
 
     @property
@@ -54,6 +73,29 @@ class Project:
     def tools(self) -> dict:
         """The built-in tools plus this project's own, by name (a reused name is an error)."""
         return available_tools(self.extra_tools)
+
+
+def load_project_tools(root: Path) -> tuple[Tool, ...]:
+    """The TOOLS list from <root>/tools.py, or () if there's no such file.
+
+    This runs the project's code, the way pytest runs a conftest.py: project tools are as
+    trusted as the project's agent files, and run inside the harness process (not in the
+    sandbox, which confines bash only). Keep tools.py self-contained, or import only
+    installed packages: the project folder isn't added to Python's import path.
+    """
+    path = root / PROJECT_TOOLS_FILE
+    if not path.is_file():
+        return ()
+    spec = importlib.util.spec_from_file_location(f"_harness_project_tools_{abs(hash(str(path)))}", path)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        raise ProjectToolsError(f"{path}: couldn't be loaded: {type(e).__name__}: {e}") from e
+    tools = getattr(module, "TOOLS", None)
+    if not isinstance(tools, (list, tuple)) or not all(isinstance(t, Tool) for t in tools):
+        raise ProjectToolsError(f"{path}: must define TOOLS, a list of harness.tools.Tool")
+    return tuple(tools)
 
 
 @dataclass(frozen=True)

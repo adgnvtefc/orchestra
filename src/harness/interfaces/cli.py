@@ -13,9 +13,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from harness.config import Project
+from dotenv import load_dotenv
+
+from harness.config import Project, ProjectToolsError
 from harness.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
 from harness.policy import approve_all, deny_all, require_sandbox_for_auto_approval
+from harness.providers import MissingAPIKey
 from harness.sandbox import Unsandboxed, default_sandbox
 
 
@@ -156,6 +159,9 @@ def main(argv: list[str] | None = None) -> None:
     chat_cmd = commands.add_parser("chat", parents=[new_session], help="talk to an agent, turn by turn")
     chat_cmd.add_argument("--resume", metavar="SESSION_ID", help="continue a saved session")
     args = parser.parse_args(argv)
+    # The terminal's way of supplying the API key: a .env file (here or above). The harness
+    # itself only reads environment variables, so programs using it as a library choose their own.
+    load_dotenv()
 
     # The terminal decides how to ask a human; the orchestrator just uses whatever it's given.
     approver = deny_all if args.unattended else approve_all if args.yes else terminal_approver
@@ -169,9 +175,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if not getattr(args, "resume", None):  # a new session: find its config, check the agent name
         try:
-            project = Project(Path(args.config_root).expanduser()) if args.config_root else Project.find(Path.cwd())
+            project = Project.at(Path(args.config_root).expanduser()) if args.config_root else Project.find(Path.cwd())
         except FileNotFoundError as e:
             command.error(f"{e}. Run from a project with agents/, or pass --config-root")
+        except ProjectToolsError as e:
+            command.error(str(e))
         agents = project.agents()
         if (args.agent or "base") not in agents:  # a typo fails here, with the list of real ones
             command.error(f"argument --agent: invalid choice: {args.agent or 'base'!r} (choose from {', '.join(agents)})")
@@ -181,7 +189,26 @@ def main(argv: list[str] | None = None) -> None:
         task = " ".join(args.task).strip()
         if not task:
             run_cmd.error("the task is empty")  # prints usage and exits, like any other bad argument
-        conv = new_conversation(args.agent or "base", **new)
+
+    if getattr(args, "resume", None):
+        # A session's agent, workspace, and environment are fixed when it's created.
+        fixed = [flag for flag, value in (("--agent", args.agent), ("--workspace", workspace),
+                                          ("--environment", args.environment), ("--config-root", args.config_root)) if value]
+        if fixed:
+            chat_cmd.error(f"{', '.join(fixed)} can't be changed when resuming: the session keeps what it started with")
+        if not session_exists(args.resume):
+            chat_cmd.error(f"no session {args.resume!r}")
+
+    # The one place a conversation is opened; problems become usage errors, not tracebacks.
+    try:
+        if getattr(args, "resume", None):
+            conv = resume_conversation(args.resume, approver=approver, sandbox=sandbox)  # per run, not fixed
+        else:
+            conv = new_conversation(args.agent or "base", **new)
+    except (MissingAPIKey, ProjectToolsError) as e:  # ProjectToolsError: a resumed session's project tools.py
+        command.error(str(e))
+
+    if args.command == "run":
         try:
             result = conv.turn(task, on_event=show_step)
         finally:
@@ -192,16 +219,4 @@ def main(argv: list[str] | None = None) -> None:
             print(turn_summary(result.run_end), file=sys.stderr)
         print(result.answer)
         return
-
-    if args.resume:
-        # A session's agent, workspace, and environment are fixed when it's created.
-        fixed = [flag for flag, value in (("--agent", args.agent), ("--workspace", workspace),
-                                          ("--environment", args.environment), ("--config-root", args.config_root)) if value]
-        if fixed:
-            chat_cmd.error(f"{', '.join(fixed)} can't be changed when resuming: the session keeps what it started with")
-        if not session_exists(args.resume):
-            chat_cmd.error(f"no session {args.resume!r}")
-        conv = resume_conversation(args.resume, approver=approver, sandbox=sandbox)  # per run, not fixed
-    else:
-        conv = new_conversation(args.agent or "base", **new)
     chat(conv)

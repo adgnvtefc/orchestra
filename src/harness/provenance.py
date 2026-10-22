@@ -4,15 +4,19 @@ A hash *identifies* content, it doesn't store it. The full agent definition is
 already in every trace's run_start.config; agent_version is the key to find and
 group runs by it. The harness code is recoverable from git by commit, but only
 when the working tree was clean (dirty=False): uncommitted changes exist nowhere.
+
+Which harness code ran depends on how it was installed, and that's checked, never
+assumed: an installed copy sits inside *another* project's .venv, and running git there
+would record that project's commit instead.
 """
 
 import functools
 import hashlib
+import importlib.metadata
 import json
 import subprocess
+import tomllib
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def agent_version(config: dict) -> str:
@@ -28,13 +32,66 @@ def agent_version(config: dict) -> str:
 
 @functools.cache
 def harness_version() -> dict:
-    """The git commit of the harness code, and whether there were uncommitted changes.
+    """Which harness code is running: its version, how it was installed, and its commit if known.
 
     Cached: measured once per process, at the first run. That's the closest match to
     the code actually running, which was imported at startup; files edited on disk
     afterwards don't change this process's code.
     """
-    return git_state(REPO_ROOT)
+    return describe_install(_package_version(), find_source_checkout(Path(__file__)), _direct_url())
+
+
+def describe_install(version: str | None, checkout: Path | None, direct_url: dict | None) -> dict:
+    """What to record, from the three facts we can know (pure: tested for each case).
+
+        checkout   running from the harness's own source (developing it, or an editable
+                   install): git there says exactly which commit, and whether it's dirty
+        git        installed from a git URL: the installer recorded the commit (PEP 610's
+                   direct_url.json); installed from a commit, so never dirty
+        path       installed from a folder or wheel: a copy taken at install time, whose
+                   commit can't be known; the source is recorded instead
+    """
+    if checkout is not None:
+        return {"version": version, "installed": "checkout", **git_state(checkout)}
+    if direct_url and direct_url.get("vcs_info", {}).get("commit_id"):
+        return {"version": version, "installed": "git", "commit": direct_url["vcs_info"]["commit_id"],
+                "dirty": False, "source": direct_url.get("url")}
+    return {"version": version, "installed": "path", "commit": None, "dirty": None,
+            "source": direct_url.get("url") if direct_url else None}
+
+
+def find_source_checkout(code_file: Path) -> Path | None:
+    """The harness's own source folder, if `code_file` is running from one.
+
+    The nearest pyproject.toml above the code decides: in the harness repo it says
+    name = "harness"; installed in another project's .venv, the nearest one is that
+    project's, so this returns None and git is never asked about the wrong repo.
+    """
+    for folder in code_file.resolve().parents:
+        pyproject = folder / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                name = tomllib.loads(pyproject.read_text()).get("project", {}).get("name")
+            except (OSError, tomllib.TOMLDecodeError):
+                return None
+            return folder if name == "harness" else None
+    return None
+
+
+def _package_version() -> str | None:
+    try:
+        return importlib.metadata.version("harness")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _direct_url() -> dict | None:
+    """How the harness was installed, as the installer recorded it (direct_url.json), if at all."""
+    try:
+        text = importlib.metadata.distribution("harness").read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    return json.loads(text) if text else None
 
 
 def git_state(repo: Path) -> dict:

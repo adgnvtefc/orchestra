@@ -36,6 +36,15 @@ def sessions_dir(tmp_path, monkeypatch):
     return directory
 
 
+@pytest.fixture(autouse=True)
+def no_dotenv(monkeypatch):
+    """The CLI loads .env at startup; in tests that would pull your real API key into the
+    test process. Every test (autouse) gets a no-op instead. Returns the list of calls."""
+    calls = []
+    monkeypatch.setattr("harness.interfaces.cli.load_dotenv", lambda *args, **kwargs: calls.append(args))
+    return calls
+
+
 @pytest.fixture
 def answer_prompt(monkeypatch):
     """Script the human's answers to y/N prompts. Returns the list of prompts shown.
@@ -61,6 +70,26 @@ def answer_prompt(monkeypatch):
 def approve(answer_prompt):
     """The human says yes to every prompt."""
     return answer_prompt("y")
+
+
+@pytest.fixture
+def typed(monkeypatch):
+    """Script what the human types at `you>`. When the script runs out, it's Ctrl-D."""
+
+    def install(*lines):
+        remaining = list(lines)
+
+        def fake_input(prompt=""):
+            if not remaining:
+                raise EOFError
+            item = remaining.pop(0)
+            if isinstance(item, type) and issubclass(item, BaseException):
+                raise item
+            return item
+
+        monkeypatch.setattr("builtins.input", fake_input)
+
+    return install
 
 
 @pytest.fixture

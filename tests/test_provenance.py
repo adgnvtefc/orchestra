@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from harness import provenance
-from harness.provenance import agent_version, collect, git_state
+from harness.provenance import agent_version, collect, describe_install, find_source_checkout, git_state
 
 CONFIG = {"name": "base", "model": "m", "temperature": 0.6, "max_steps": 20, "tools": ["bash"], "system_prompt": "Hi."}
 
@@ -104,7 +104,7 @@ class TestCollect:
         record = collect(CONFIG)
         assert set(record) == {"agent_version", "harness"}
         assert record["agent_version"] == agent_version(CONFIG)
-        assert set(record["harness"]) == {"commit", "dirty"}
+        assert {"version", "installed", "commit", "dirty"} <= set(record["harness"])
 
     def test_harness_version_is_measured_once_per_process(self, monkeypatch):
         provenance.harness_version.cache_clear()
@@ -120,3 +120,91 @@ class TestCollect:
         harness = collect(CONFIG)["harness"]
         assert re.fullmatch(r"[0-9a-f]{40}", harness["commit"])
         assert isinstance(harness["dirty"], bool)
+
+
+
+class TestDescribeInstall:
+    """Which harness code ran, for each way it can be installed."""
+
+    def test_source_checkout_uses_git_there(self, repo):
+        record = describe_install("0.1.0", repo, None)
+        assert record["installed"] == "checkout"
+        assert record["version"] == "0.1.0"
+        assert re.fullmatch(r"[0-9a-f]{40}", record["commit"]) and record["dirty"] is False
+
+    def test_git_install_uses_the_recorded_commit(self):
+        direct = {"url": "https://github.com/x/harness", "vcs_info": {"vcs": "git", "commit_id": "a" * 40}}
+        assert describe_install("0.2.0", None, direct) == {
+            "version": "0.2.0", "installed": "git", "commit": "a" * 40, "dirty": False,
+            "source": "https://github.com/x/harness",
+        }
+
+    def test_path_install_admits_the_commit_is_unknown(self):
+        direct = {"url": "file:///some/folder", "dir_info": {}}
+        assert describe_install("0.1.0", None, direct) == {
+            "version": "0.1.0", "installed": "path", "commit": None, "dirty": None, "source": "file:///some/folder",
+        }
+
+    def test_nothing_known(self):
+        assert describe_install(None, None, None)["commit"] is None
+
+
+class TestFindSourceCheckout:
+    def write_project(self, folder, name):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
+
+    def test_inside_the_harness_repo(self, tmp_path):
+        self.write_project(tmp_path, "harness")
+        code = tmp_path / "src" / "harness" / "provenance.py"
+        code.parent.mkdir(parents=True)
+        code.write_text("")
+        assert find_source_checkout(code) == tmp_path.resolve()
+
+    def test_installed_inside_another_project_is_not_a_checkout(self, tmp_path):
+        # The bug this exists to prevent: an installed copy inside another project's .venv
+        # must never be mistaken for the harness repo (git there gives *that* project's commit).
+        self.write_project(tmp_path, "consumer")
+        code = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "harness" / "provenance.py"
+        code.parent.mkdir(parents=True)
+        code.write_text("")
+        assert find_source_checkout(code) is None
+
+    def test_unreadable_pyproject(self, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("this is [ not toml")
+        code = tmp_path / "x.py"
+        code.write_text("")
+        assert find_source_checkout(code) is None
+
+    def test_this_repo(self):
+        from pathlib import Path
+        import harness.provenance as module
+        root = Path(module.__file__).resolve().parents[2]
+        assert find_source_checkout(Path(module.__file__)) == root
+
+
+class TestInstallFacts:
+    def test_no_pyproject_anywhere_above(self):
+        from pathlib import Path
+        assert find_source_checkout(Path("/not-a-project-file.py")) is None
+
+    def test_package_not_installed(self, monkeypatch):
+        import importlib.metadata
+        def missing(name):
+            raise importlib.metadata.PackageNotFoundError(name)
+        monkeypatch.setattr(importlib.metadata, "version", missing)
+        monkeypatch.setattr(importlib.metadata, "distribution", missing)
+        assert provenance._package_version() is None
+        assert provenance._direct_url() is None
+
+    def test_installed_without_a_record(self, monkeypatch):
+        import importlib.metadata
+        fake = type("Dist", (), {"read_text": lambda self, name: None})()
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: fake)
+        assert provenance._direct_url() is None
+
+    def test_installed_with_a_record(self, monkeypatch):
+        import importlib.metadata
+        fake = type("Dist", (), {"read_text": lambda self, name: '{"url": "file:///x", "dir_info": {}}'})()
+        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: fake)
+        assert provenance._direct_url() == {"url": "file:///x", "dir_info": {}}

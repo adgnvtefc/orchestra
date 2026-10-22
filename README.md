@@ -167,6 +167,31 @@ sandbox:                                             # optional: what its comman
 Only these keys are allowed (a typo is an error). A workspace already set up with a
 different environment is refused, never set up again over the top.
 
+### Project tools: `tools.py`
+
+A project can add its own tools by putting a `tools.py` next to its `agents/` folder that
+defines `TOOLS`, a list of `harness.tools.Tool`. The CLI (and `Project.find` / `Project.at`
+from Python) load it automatically, so an agent can list those tools by name like built-ins:
+
+```python
+# tools.py, in your project's root
+from harness.tools import Tool
+
+def stock_price(ctx, ticker: str) -> str:
+    return lookup_price(ticker)
+
+TOOLS = [Tool(fn=stock_price, permission="allow", schema={"type": "function", "function": {
+    "name": "stock_price", "description": "Latest price for a ticker.",
+    "parameters": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]}}})]
+```
+
+- A tool function takes `ctx` (its workspace, environment, sandbox) first, then the arguments the model sends.
+- `permission="ask"` makes the CLI ask y/N before each call (or follow `--yes` / `--unattended`).
+- A name already used by a built-in is an error. A broken `tools.py` is reported with its path.
+- **`tools.py` is code you trust,** like the agent files: it runs inside the harness (the
+  sandbox confines bash only), the way pytest runs a `conftest.py`. Keep it self-contained or
+  import installed packages; the project folder isn't added to Python's import path.
+
 ## Where things go
 
 Sessions live in `~/.orchestra/sessions/` (also reachable as `~/projects/orchestra-sessions`),
@@ -182,7 +207,8 @@ deliberately outside this project:
 ```
 
 Each trace's first line records what produced it: the agent version (a hash of its
-config), the harness's git commit and whether it had uncommitted changes, the approver,
+config), which harness code ran (its version, how it was installed, and its git commit when
+knowable: exact for a source checkout or a git install), the approver,
 and the sandbox.
 
 ## Using it from Python, with your own tools
@@ -209,8 +235,9 @@ WEATHER = Tool(
     permission="allow",
 )
 
-# The project: where agents/ and environments/ are, plus its own tools.
-# Project.find walks up from a folder; Project(Path(...), (WEATHER,)) names the folder directly.
+# The project: where agents/ and environments/ are, plus its tools: the ones in its tools.py
+# (loaded automatically) and any passed here. Project.find walks up from a folder;
+# Project.at(Path(...), [WEATHER]) names the folder directly.
 project = Project.find(Path.cwd(), extra_tools=[WEATHER])
 
 conv = new_conversation(
@@ -223,6 +250,10 @@ print(conv.turn("And tomorrow?").answer)  # same session: it remembers the first
 ```
 
 An extra tool can't reuse a built-in tool's name (that's an error, not a replacement).
+
+As a library, the harness only *reads* `OMLX_API_KEY`/`OMLX_BASE_URL` from the environment;
+loading a `.env` file is the CLI's job, so set them however your program likes. A missing
+key raises `harness.providers.MissingAPIKey`, an ordinary exception your program can catch.
 `resume_conversation(session_id, project=project)` continues a saved session (its agent file
 always comes from the folder the session was created in).
 
@@ -235,6 +266,7 @@ uv run pytest -m live         # also run real tasks against the model server
 
 ## Changelog
 
+- 10/22: added functionality to import harness as library to external projects. NOTE: functionality as library has not been explicitly human tested yet.
 - 10/21: added sessions, traces, chats, refactors for scalability
 - 10/7: small refactor for scalable design in tools. added tests (fully ai generated, trusting that they work)
 - 10/6: got harness running with minimal features. can answer simple queries.

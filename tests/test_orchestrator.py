@@ -421,6 +421,17 @@ class TestConversation:
     def test_session_exists(self):
         assert not orchestrator.session_exists("no-such-session")
 
+    def test_missing_key_reaches_the_caller_as_an_exception(self, agents_dir, monkeypatch):
+        from harness.providers import MissingAPIKey
+        write_agent(agents_dir, "base")
+        monkeypatch.delenv("OMLX_API_KEY", raising=False)
+        try:
+            orchestrator.new_conversation("base")
+        except Exception as e:  # what a host program would write
+            assert isinstance(e, MissingAPIKey)
+        else:
+            raise AssertionError("expected MissingAPIKey")
+
     def test_orchestrator_never_touches_the_terminal(self):
         # Interfaces do the reading and printing; the orchestrator only wires things.
         source = Path(orchestrator.__file__).read_text()

@@ -6,7 +6,8 @@ Layout:
   builtin/    tool implementations; they import base.py and nothing else from here
 
 To add a built-in tool: write it in a builtin/ module, then add it to BUILTIN_TOOLS in builtin/__init__.py.
-To add a tool without touching the harness: Project(root, extra_tools=[...]) (see config.py).
+To add a tool without touching the harness: a tools.py in your project defining TOOLS, or
+Project.at(root, extra_tools=[...]) from Python (see config.py).
 """
 
 from harness.tools.base import Tool, ToolContext

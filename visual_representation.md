@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-22, sandbox rules come from the environment file
+**Last updated:** 2026-10-22, a project's tools.py gives the CLI its own tools
 
 ---
 
@@ -190,8 +190,9 @@ passes it on every call; it isn't in any schema, so the model can neither see no
 the project root), else a fresh empty folder inside the session. A given folder must already
 exist. The session records its workspace when created, so resuming works on the same files.
 
-Tools come from the built-ins plus the project's own (`Project(root, extra_tools=...)`, passed
-to `new_conversation()`), so a project adds tools without editing the harness. An agent only gets the tools its `.md` file lists. A tool it wasn't given can't run,
+Tools come from the built-ins plus the project's own: its `tools.py` (defining `TOOLS`, loaded
+by `Project.find`/`Project.at`, so the CLI picks them up) and any passed from Python. A project
+adds tools without editing the harness. An agent only gets the tools its `.md` file lists. A tool it wasn't given can't run,
 even if the model invents a call to it.
 
 ---
@@ -354,7 +355,8 @@ A hash *identifies* content; it doesn't store it.
 | Field | Meaning | Recoverable? |
 |---|---|---|
 | `agent_version` | 12-char hash of the agent definition (name excluded): same content, same version | Yes: the full definition is in `run_start.config` |
-| `harness.commit` / `harness.dirty` | git commit of the harness code; whether there were uncommitted changes | Via `git checkout`, only if `dirty` is false |
+| `harness.version` / `.installed` | the harness package's version; how it got there: `checkout` (its own source), `git` (a git install), or `path` (a folder or wheel) | |
+| `harness.commit` / `harness.dirty` | the commit: from git in a checkout (with `dirty`), from the installer's record for a git install (never dirty), `null` for a path install | Via `git checkout`, only if `dirty` is false |
 | `config.model` (+ `model` per response) | the model asked for, and the one the server says answered | Only if the same weights still exist |
 
 ---
