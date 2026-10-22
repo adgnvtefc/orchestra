@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from harness import config, orchestrator
+from harness.config import Project
 from harness.policy import deny_all
 from harness.tools import Toolset
 from tests.fakes import FakeClient, reply
@@ -19,7 +20,7 @@ def agents_dir(tmp_path, monkeypatch):
     """A temp agents/ folder the orchestrator reads from, plus a FakeClient it builds."""
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(config, "AGENTS_DIR", directory)
+    monkeypatch.chdir(tmp_path)  # a temp project: its agents/ is found by walking up from here
     return directory
 
 
@@ -248,7 +249,6 @@ class TestEnvironments:
 
         envs = tmp_path / "environments"
         envs.mkdir()
-        monkeypatch.setattr(config, "ENVIRONMENTS_DIR", envs)
         (envs / "greet.yaml").write_text(
             "setup:\n  - echo built > made.txt\nenv:\n  GREETING: hello\nprompt: |\n  You have made.txt.\n"
         )
@@ -413,3 +413,55 @@ class TestConversation:
         # Interfaces do the reading and printing; the orchestrator only wires things.
         source = Path(orchestrator.__file__).read_text()
         assert "input(" not in source and "print(" not in source
+
+
+
+class TestLibraryUse:
+    """Using the harness from another project: its own config root, its own tools."""
+
+    def test_extra_tool_end_to_end(self, agents_dir, monkeypatch):
+        from harness.tools import Tool
+        from tests.fakes import call
+
+        def weather(ctx, city: str) -> str:
+            return f"sunny in {city}"
+
+        schema = {"type": "function", "function": {"name": "weather", "description": "the weather",
+                  "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
+        (agents_dir / "forecaster.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - weather\n---\nP\n")
+        client = FakeClient([reply(tool_calls=[call("weather", {"city": "Paris"})]), reply("It's sunny.")])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        project = Project.find(agents_dir, [Tool(fn=weather, schema=schema, permission="allow")])
+        conv = orchestrator.new_conversation("forecaster", project=project)
+        assert conv.turn("weather in Paris?").answer == "It's sunny."
+        assert client.requests[0]["tools"][0]["function"]["name"] == "weather"  # the model was shown it
+        assert client.requests[1]["messages"][-1]["content"] == "sunny in Paris"  # and it ran
+
+    def test_explicit_config_root_from_anywhere(self, tmp_path, monkeypatch):
+        project = tmp_path / "other-project"
+        (project / "agents").mkdir(parents=True)
+        write_agent(project / "agents", "base", prompt="Other project's agent.")
+        monkeypatch.chdir(tmp_path)  # tmp_path itself has no agents/
+        client = FakeClient([reply("hi")])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        orchestrator.new_conversation("base", project=Project(project)).turn("t")
+        assert client.requests[0]["messages"][0]["content"] == "Other project's agent."
+
+    def test_session_records_its_config_root(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        conv = orchestrator.new_conversation("base")
+        assert conv.session.config_root == agents_dir.parent.resolve()
+
+    def test_resume_reads_the_sessions_own_agent_file(self, agents_dir, tmp_path, monkeypatch):
+        write_agent(agents_dir, "base", tools=["read_file"])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
+        first = orchestrator.new_conversation("base")
+        first.turn("t")
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "agents").mkdir(parents=True)
+        write_agent(elsewhere / "agents", "base", tools=["bash"])  # a different "base"
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        again = orchestrator.resume_conversation(first.session.id)
+        assert list(again.toolset.tools) == ["read_file"]  # the original project's agent, not the nearby one

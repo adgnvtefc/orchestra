@@ -3,20 +3,57 @@
 Reads files and checks folders exist; builds nothing (no sessions, clients, or tools).
 Everything a run is configured by goes through resolve_run_config(), so a typo in any
 of it fails before anything is created.
+
+A Project is where config comes from: a folder with agents/ (and optionally
+environments/), plus any tools of its own. Project.find() locates the folder by walking
+up from where you are, the way git finds .git. So any project can have its own.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
 from harness.environment import Environment, load_environment
-from harness.tools import Toolset
+from harness.tools import Tool, Toolset, available_tools
 
-# Where config lives, relative to this file, so `uv run harness` works from any directory.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-AGENTS_DIR = PROJECT_ROOT / "agents"
-ENVIRONMENTS_DIR = PROJECT_ROOT / "environments"
+
+@dataclass(frozen=True)
+class Project:
+    """Everything that comes from the project you're running in, as one value.
+
+    Functions take a Project instead of its parts, so a new per-project setting is added
+    here, not to every signature on the way to where it's used.
+    """
+
+    root: Path  # has agents/ (and optionally environments/)
+    extra_tools: tuple[Tool, ...] = ()  # the project's own tools, alongside the built-ins
+
+    @classmethod
+    def find(cls, start: Path, extra_tools: Sequence[Tool] = ()) -> "Project":
+        """The nearest folder at or above `start` that has an agents/ folder."""
+        start = start.resolve()
+        for folder in (start, *start.parents):
+            if (folder / "agents").is_dir():
+                return cls(folder, tuple(extra_tools))
+        raise FileNotFoundError(f"no agents/ folder in {start} or any folder above it")
+
+    @property
+    def agents_dir(self) -> Path:
+        return self.root / "agents"
+
+    @property
+    def environments_dir(self) -> Path:
+        return self.root / "environments"
+
+    def agents(self) -> list[str]:
+        """Names of the agents defined in agents/, sorted."""
+        return sorted(path.stem for path in self.agents_dir.glob("*.md"))
+
+    def tools(self) -> dict:
+        """The built-in tools plus this project's own, by name (a reused name is an error)."""
+        return available_tools(self.extra_tools)
 
 
 @dataclass(frozen=True)
@@ -29,27 +66,25 @@ class RunConfig:
     environment: Environment | None
 
 
-def list_agents() -> list[str]:
-    """Names of the agents defined in agents/, sorted."""
-    return sorted(path.stem for path in AGENTS_DIR.glob("*.md"))
-
-
-def resolve_agent(agent_name: str) -> dict:
-    """Read agents/<name>.md and check its tool names. Just the agent's own settings: a
-    resumed session uses this, since its workspace and environment are already fixed."""
-    agent = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
-    Toolset.check_names(agent.get("tools", []))  # no `tools:` key means no tools: access is opt-in
+def resolve_agent(agent_name: str, project: Project) -> dict:
+    """Read agents/<name>.md and check its tool names against the project's tools. Just the
+    agent's own settings: a resumed session uses this, since its workspace and environment
+    are already fixed."""
+    agent = {"name": agent_name, **load_agent_config(project.agents_dir / f"{agent_name}.md")}
+    Toolset.check_names(agent.get("tools", []), project.tools())  # no `tools:` key means no tools: access is opt-in
     return agent
 
 
-def resolve_run_config(agent_name: str, *, workspace: Path | None = None, environment: str | None = None) -> RunConfig:
+def resolve_run_config(
+    agent_name: str, project: Project, *, workspace: Path | None = None, environment: str | None = None
+) -> RunConfig:
     """Read the agent file and apply the command line's overrides; check everything.
 
     `workspace` / `environment` come from the command line and win over the agent file's.
     """
-    agent = resolve_agent(agent_name)
-    folder = resolve_workspace(workspace, agent.get("workspace"))
-    env = resolve_environment(environment, agent.get("environment"))
+    agent = resolve_agent(agent_name, project)
+    folder = resolve_workspace(workspace, agent.get("workspace"), project)
+    env = resolve_environment(environment, agent.get("environment"), project)
 
     # The resolved config records what the run actually used: the environment's name *and*
     # version, so agent_version changes whenever the environment's content does.
@@ -58,17 +93,17 @@ def resolve_run_config(agent_name: str, *, workspace: Path | None = None, enviro
     return RunConfig(agent=agent, system_prompt=system_prompt, workspace=folder, environment=env)
 
 
-def resolve_workspace(from_cli: Path | None, from_config: str | None) -> Path | None:
+def resolve_workspace(from_cli: Path | None, from_config: str | None, project: Project) -> Path | None:
     """Which folder to work in: the command line wins, then the agent file; None means a fresh one.
 
-    A path in an agent file may use ~ and is relative to the project root, so it means
+    A path in an agent file may use ~ and is relative to the project's root, so it means
     the same thing wherever you run from. The folder must already exist: a typo should
     fail here, not quietly create a new empty folder somewhere.
     """
     if from_cli is not None:
         path = from_cli
     elif from_config is not None:
-        path = PROJECT_ROOT / Path(from_config).expanduser()  # an absolute path replaces PROJECT_ROOT
+        path = project.root / Path(from_config).expanduser()  # an absolute path replaces the root
     else:
         return None
     if not path.is_dir():
@@ -76,12 +111,12 @@ def resolve_workspace(from_cli: Path | None, from_config: str | None) -> Path | 
     return path.resolve()
 
 
-def resolve_environment(from_cli: str | None, from_config: str | None) -> Environment | None:
+def resolve_environment(from_cli: str | None, from_config: str | None, project: Project) -> Environment | None:
     """Which environment: the command line wins, then the agent file. "none" (or neither) means none."""
     name = from_cli if from_cli is not None else from_config
     if name is None or name == "none":
         return None
-    return load_environment(ENVIRONMENTS_DIR, name, PROJECT_ROOT)
+    return load_environment(project.environments_dir, name, project.root)
 
 
 def load_agent_config(path: str | Path) -> dict:

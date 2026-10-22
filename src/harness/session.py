@@ -6,7 +6,7 @@ compaction (later) will rewrite a session's history, while traces never change.
 
 On disk, one folder per session:
 
-    sessions/<id>/session.json      id, agent, agent_version, workspace, environment, created: written once, never changed
+    sessions/<id>/session.json      id, agent, agent_version, workspace, config_root, environment, created: written once
     sessions/<id>/messages.jsonl    the conversation, one message per line, appended as it happens
     sessions/<id>/turn-001.jsonl    the trace of turn 1, turn-002.jsonl of turn 2, ...
     sessions/<id>/workspace/        where the agent works, unless the session was given another folder
@@ -67,6 +67,12 @@ class Session:
         return Path(self.meta["workspace"])
 
     @property
+    def config_root(self) -> Path | None:
+        """Where this session's agent file lives (None for sessions from before this was recorded)."""
+        recorded = self.meta.get("config_root")
+        return Path(recorded) if recorded else None
+
+    @property
     def environment(self) -> dict | None:
         """{"name", "version"} of the environment this session was set up with, or None."""
         recorded = self.meta.get("environment")
@@ -97,6 +103,7 @@ class Session:
         agent_version: str,
         workspace: Path | None = None,
         environment: Environment | None = None,
+        config_root: Path | None = None,
     ) -> "Session":
         """Start a new session. The system prompt becomes message 0 and is fixed from here on:
         editing the agent file later doesn't change sessions that already exist.
@@ -107,6 +114,8 @@ class Session:
         are recorded so a resumed session gets the same variables even if the environment
         file has changed since. The variables are stored with "{workspace}" unfilled (see
         environment_variables). None means no environment.
+        `config_root`: the folder whose agents/ this session's agent came from, so resuming
+        finds the same agent file wherever you resume from.
         """
         session_id = new_session_id(agent)
         directory = root / session_id
@@ -119,6 +128,7 @@ class Session:
             "agent": agent,
             "agent_version": agent_version,  # what the session started with; each turn's trace has its own provenance
             "workspace": str(workspace.resolve()),
+            "config_root": str(config_root.resolve()) if config_root else None,
             "environment": (
                 {"name": environment.name, "version": environment.version, "variables": environment.env}
                 if environment else None

@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-21, --yes: auto-approval, allowed only inside the sandbox
+**Last updated:** 2026-10-22, Project: where config comes from, plus the project's own tools
 
 ---
 
@@ -190,7 +190,8 @@ passes it on every call; it isn't in any schema, so the model can neither see no
 the project root), else a fresh empty folder inside the session. A given folder must already
 exist. The session records its workspace when created, so resuming works on the same files.
 
-An agent only gets the tools its `.md` file lists. A tool it wasn't given can't run,
+Tools come from the built-ins plus the project's own (`Project(root, extra_tools=...)`, passed
+to `new_conversation()`), so a project adds tools without editing the harness. An agent only gets the tools its `.md` file lists. A tool it wasn't given can't run,
 even if the model invents a call to it.
 
 ---
@@ -373,7 +374,7 @@ tools never import the machinery around them, and `policy.py` imports nothing at
 flowchart TD
     climod["interfaces/cli.py<br/>terminal interface:<br/>commands, chat loop, y/N prompt"] --> orch
     orch["orchestrator.py<br/>control plane: Conversation,<br/>no terminal I/O"] --> agent["agent.py<br/>the loop"]
-    orch --> loader["config.py<br/>reads + resolves agents/ and<br/>environments/ into a RunConfig"]
+    orch --> loader["config.py<br/>Project (root + its tools); reads + resolves<br/>agents/ and environments/ into a RunConfig"]
     orch --> providers["providers/omlx.py<br/>make_client, call_model"]
     base --> sandboxmod["sandbox.py<br/>Seatbelt: confine bash"]
     agent --> providers

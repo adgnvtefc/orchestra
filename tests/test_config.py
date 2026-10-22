@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from harness import config
-from harness.config import load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
+from harness.config import Project, load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
 from harness.environment import EnvironmentSetupError
 
 
@@ -98,7 +98,7 @@ class TestInvalidFiles:
         with pytest.raises(yaml.YAMLError):
             load_agent_config(agent_file("---\nmodel: [unclosed\n---\nhi"))
 
-    def test_yaml_cannot_construct_python_objects(self, agent_file):
+    def test_yaml_cannot_construct_python_objects(self, agent_file, tmp_path):
         # safe_load refuses python/* tags; plain yaml.load would execute this.
         with pytest.raises(yaml.constructor.ConstructorError):
             load_agent_config(agent_file("---\nx: !!python/object/apply:os.system ['echo pwned']\n---\nhi"))
@@ -109,9 +109,6 @@ def config_dirs(tmp_path, monkeypatch):
     """Temp agents/ and environments/ folders, with the project root at tmp_path."""
     agents, envs = tmp_path / "agents", tmp_path / "environments"
     agents.mkdir(), envs.mkdir()
-    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(config, "AGENTS_DIR", agents)
-    monkeypatch.setattr(config, "ENVIRONMENTS_DIR", envs)
     (envs / "py.yaml").write_text("setup:\n  - echo hi\nprompt: |\n  You have Python.\n")
 
     def agent(name, extra=""):
@@ -121,79 +118,128 @@ def config_dirs(tmp_path, monkeypatch):
 
 
 class TestListAgents:
-    def test_sorted_names(self, config_dirs):
+    def test_sorted_names(self, config_dirs, tmp_path):
         config_dirs("zeta")
         config_dirs("alpha")
-        assert config.list_agents() == ["alpha", "zeta"]
+        assert Project(tmp_path).agents() == ["alpha", "zeta"]
 
 
 class TestResolveWorkspace:
     def test_cli_wins(self, tmp_path):
-        assert resolve_workspace(tmp_path, "somewhere/else") == tmp_path.resolve()
+        assert resolve_workspace(tmp_path, "somewhere/else", Project(tmp_path)) == tmp_path.resolve()
 
     def test_agent_file_path_is_from_project_root(self, config_dirs, tmp_path):
         (tmp_path / "sub").mkdir()
-        assert resolve_workspace(None, "sub") == (tmp_path / "sub").resolve()
+        assert resolve_workspace(None, "sub", Project(tmp_path)) == (tmp_path / "sub").resolve()
 
-    def test_agent_file_home_path(self):
-        assert resolve_workspace(None, "~") == Path.home().resolve()
+    def test_agent_file_home_path(self, tmp_path):
+        assert resolve_workspace(None, "~", Project(tmp_path)) == Path.home().resolve()
 
-    def test_none_means_fresh(self):
-        assert resolve_workspace(None, None) is None
+    def test_none_means_fresh(self, tmp_path):
+        assert resolve_workspace(None, None, Project(tmp_path)) is None
 
     def test_must_exist(self, tmp_path):
         with pytest.raises(ValueError, match="not an existing folder"):
-            resolve_workspace(tmp_path / "typo", None)
+            resolve_workspace(tmp_path / "typo", None, Project(tmp_path))
 
 
 class TestResolveEnvironment:
-    def test_from_agent_file(self, config_dirs):
-        assert resolve_environment(None, "py").name == "py"
+    def test_from_agent_file(self, config_dirs, tmp_path):
+        assert resolve_environment(None, "py", Project(tmp_path)).name == "py"
 
-    def test_cli_wins(self, config_dirs):
-        assert resolve_environment("none", "py") is None
+    def test_cli_wins(self, config_dirs, tmp_path):
+        assert resolve_environment("none", "py", Project(tmp_path)) is None
 
-    def test_neither(self, config_dirs):
-        assert resolve_environment(None, None) is None
+    def test_neither(self, config_dirs, tmp_path):
+        assert resolve_environment(None, None, Project(tmp_path)) is None
 
-    def test_unknown(self, config_dirs):
+    def test_unknown(self, config_dirs, tmp_path):
         with pytest.raises(EnvironmentSetupError, match="no environment 'nope'"):
-            resolve_environment("nope", None)
+            resolve_environment("nope", None, Project(tmp_path))
 
 
 class TestResolveRunConfig:
-    def test_without_environment(self, config_dirs):
+    def test_without_environment(self, config_dirs, tmp_path):
         config_dirs("base")
-        rc = resolve_run_config("base")
+        rc = resolve_run_config("base", Project(tmp_path))
         assert rc.agent["name"] == "base"
         assert rc.agent["environment"] is None
         assert rc.system_prompt == "Base prompt."
         assert rc.workspace is None and rc.environment is None
 
-    def test_environment_is_resolved_into_the_config(self, config_dirs):
+    def test_environment_is_resolved_into_the_config(self, config_dirs, tmp_path):
         config_dirs("base", "environment: py\n")
-        rc = resolve_run_config("base")
+        rc = resolve_run_config("base", Project(tmp_path))
         assert rc.agent["environment"] == {"name": "py", "version": rc.environment.version}
         assert rc.system_prompt == "Base prompt.\n\nYou have Python."
 
     def test_cli_overrides(self, config_dirs, tmp_path):
         config_dirs("base", "environment: py\n")
-        rc = resolve_run_config("base", workspace=tmp_path, environment="none")
+        rc = resolve_run_config("base", Project(tmp_path), workspace=tmp_path, environment="none")
         assert rc.workspace == tmp_path.resolve()
         assert rc.environment is None
         assert rc.system_prompt == "Base prompt."
 
     def test_unknown_tool(self, config_dirs, tmp_path):
-        (config.AGENTS_DIR / "typo.md").write_text("---\nmodel: m\ntools:\n  - bsh\n---\nP\n")
+        (tmp_path / "agents" / "typo.md").write_text("---\nmodel: m\ntools:\n  - bsh\n---\nP\n")
         with pytest.raises(ValueError, match="bsh"):
-            resolve_run_config("typo")
+            resolve_run_config("typo", Project(tmp_path))
 
-    def test_unknown_agent(self, config_dirs):
+    def test_unknown_agent(self, config_dirs, tmp_path):
         with pytest.raises(FileNotFoundError):
-            resolve_run_config("ghost")
+            resolve_run_config("ghost", Project(tmp_path))
 
     def test_creates_nothing(self, config_dirs, tmp_path):
         config_dirs("base", "environment: py\n")
         before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
-        resolve_run_config("base")
+        resolve_run_config("base", Project(tmp_path))
         assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+
+
+
+class TestProjectFind:
+    def test_the_folder_itself(self, tmp_path):
+        (tmp_path / "agents").mkdir()
+        assert Project.find(tmp_path).root == tmp_path.resolve()
+
+    def test_walks_up_from_a_subfolder(self, tmp_path):
+        (tmp_path / "agents").mkdir()
+        deep = tmp_path / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        assert Project.find(deep).root == tmp_path.resolve()
+
+    def test_nearest_wins(self, tmp_path):
+        (tmp_path / "agents").mkdir()
+        inner = tmp_path / "inner"
+        (inner / "agents").mkdir(parents=True)
+        assert Project.find(inner).root == inner.resolve()
+
+    def test_none_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "parents", property(lambda self: []))  # don't let it find a real agents/ above tmp
+        with pytest.raises(FileNotFoundError, match="no agents/ folder"):
+            Project.find(tmp_path)
+
+
+class TestExtraToolNames:
+    def test_agent_may_list_an_extra_tool(self, config_dirs, tmp_path):
+        from harness.tools import Tool
+        weather = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "weather"}}, permission="allow")
+        (tmp_path / "agents" / "forecaster.md").write_text("---\nmodel: m\ntools:\n  - weather\n---\nP\n")
+        assert resolve_run_config("forecaster", Project(tmp_path, (weather,))).agent["tools"] == ["weather"]
+        with pytest.raises(ValueError, match="weather"):
+            resolve_run_config("forecaster", Project(tmp_path))  # without it, it's unknown
+
+
+
+class TestProject:
+    def test_dirs(self, tmp_path):
+        project = Project(tmp_path)
+        assert (project.agents_dir, project.environments_dir) == (tmp_path / "agents", tmp_path / "environments")
+
+    def test_find_keeps_extra_tools(self, tmp_path):
+        from harness.tools import Tool
+        (tmp_path / "agents").mkdir()
+        weather = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "weather"}}, permission="allow")
+        project = Project.find(tmp_path, [weather])
+        assert project.extra_tools == (weather,)
+        assert "weather" in project.tools() and "bash" in project.tools()

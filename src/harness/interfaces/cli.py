@@ -13,7 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from harness.config import list_agents
+from harness.config import Project
 from harness.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
 from harness.policy import approve_all, deny_all, require_sandbox_for_auto_approval
 from harness.sandbox import Unsandboxed, default_sandbox
@@ -21,13 +21,18 @@ from harness.sandbox import Unsandboxed, default_sandbox
 
 # this approver is currently only called from within the policy class
 def terminal_approver(name: str, arguments: dict) -> str | None:
-    """Ask the human at the terminal. Only an explicit "y" approves."""
-    print(f"\n  agent wants to run {name}")
+    """Ask the human at the terminal. Only an explicit "y" approves.
+
+    Everything goes to stderr, prompt included (input()'s own prompt would go to stdout):
+    stdout is only the answer, so `answer=$(harness ...)` still shows you the question.
+    """
+    print(f"\n  agent wants to run {name}", file=sys.stderr)
     for key, value in arguments.items():
         text = str(value)
-        print(f"    {key}: {text if len(text) <= 300 else text[:300] + '...'}")
+        print(f"    {key}: {text if len(text) <= 300 else text[:300] + '...'}", file=sys.stderr)
+    print("  allow? [y/N] ", end="", file=sys.stderr, flush=True)
     try:
-        answer = input("  allow? [y/N] ").strip().lower()
+        answer = input().strip().lower()
     except EOFError:  # no terminal attached (e.g. piped input): same situation as unattended
         return deny_all(name, arguments)
     if answer == "y":
@@ -37,15 +42,16 @@ def terminal_approver(name: str, arguments: dict) -> str | None:
 
 def show_step(event: dict) -> None:
     """Print each tool call as it finishes: what the agent ran, and the start of what it got back.
+    To stderr: progress, not the answer.
 
     Listens to the turn's trace events (Conversation.turn's on_event); everything else
     (model responses, run_start/run_end) isn't shown step by step.
     """
     if event["event"] != "tool_call":
         return
-    print(f"[step {event['step']}] {event['name']}({event['arguments']})")
+    print(f"[step {event['step']}] {event['name']}({event['arguments']})", file=sys.stderr)
     result = event["result"]
-    print(f"  -> {result if len(result) <= 200 else result[:200] + '...'}")
+    print(f"  -> {result if len(result) <= 200 else result[:200] + '...'}", file=sys.stderr)
 
 
 def turn_summary(run_end: dict) -> str:
@@ -109,8 +115,12 @@ def main(argv: list[str] | None = None) -> None:
 
     # Options for setting up a new session, shared by both commands.
     new_session = argparse.ArgumentParser(add_help=False)
-    # choices: a typo'd agent name fails right here, with the list of real ones
-    new_session.add_argument("--agent", choices=list_agents(), help="which agent in agents/ to run (default: base)")
+    new_session.add_argument("--agent", help="which agent in agents/ to run (default: base)")
+    new_session.add_argument(
+        "--config-root",
+        metavar="PATH",
+        help="the folder with agents/ and environments/ (default: the nearest one at or above the current folder)",
+    )
     # How "ask" tools get answered: a y/N prompt by default, or one of these (not both).
     approval = new_session.add_mutually_exclusive_group()
     approval.add_argument(
@@ -155,7 +165,17 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as e:
         (run_cmd if args.command == "run" else chat_cmd).error(str(e))
     workspace = Path(args.workspace).expanduser() if args.workspace else None
-    new = dict(approver=approver, sandbox=sandbox, workspace=workspace, environment=args.environment)
+    command = run_cmd if args.command == "run" else chat_cmd
+
+    if not getattr(args, "resume", None):  # a new session: find its config, check the agent name
+        try:
+            project = Project(Path(args.config_root).expanduser()) if args.config_root else Project.find(Path.cwd())
+        except FileNotFoundError as e:
+            command.error(f"{e}. Run from a project with agents/, or pass --config-root")
+        agents = project.agents()
+        if (args.agent or "base") not in agents:  # a typo fails here, with the list of real ones
+            command.error(f"argument --agent: invalid choice: {args.agent or 'base'!r} (choose from {', '.join(agents)})")
+        new = dict(project=project, approver=approver, sandbox=sandbox, workspace=workspace, environment=args.environment)
 
     if args.command == "run":
         task = " ".join(args.task).strip()
@@ -176,7 +196,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.resume:
         # A session's agent, workspace, and environment are fixed when it's created.
         fixed = [flag for flag, value in (("--agent", args.agent), ("--workspace", workspace),
-                                          ("--environment", args.environment)) if value]
+                                          ("--environment", args.environment), ("--config-root", args.config_root)) if value]
         if fixed:
             chat_cmd.error(f"{', '.join(fixed)} can't be changed when resuming: the session keeps what it started with")
         if not session_exists(args.resume):

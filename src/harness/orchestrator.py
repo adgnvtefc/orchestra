@@ -14,7 +14,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from harness.agent import run_agent
-from harness.config import RunConfig, resolve_agent, resolve_run_config
+from harness.config import Project, RunConfig, resolve_agent, resolve_run_config
 from harness.environment import provision
 from harness.policy import Approver, Policy, deny_all, require_sandbox_for_auto_approval
 from harness.provenance import agent_version
@@ -67,6 +67,7 @@ class Conversation:
 def new_conversation(
     agent_name: str = "base",
     *,
+    project: Project | None = None,
     approver: Approver = deny_all,
     sandbox: Seatbelt | Unsandboxed | None = None,
     workspace: Path | None = None,
@@ -79,33 +80,46 @@ def new_conversation(
     approve_all is refused unless sandboxed.
     `sandbox`: how bash commands are confined; None means default_sandbox() (Seatbelt on macOS).
     `workspace` / `environment`: override the agent file's; see config.
+    `project`: where agents/ and environments/ are, plus the project's own tools; None means
+    Project.find() from the current directory, the way git finds .git.
     """
     # Check everything first: a bad combination or a typo should fail before any folder is created.
     sandbox = sandbox or default_sandbox()
     require_sandbox_for_auto_approval(approver, sandbox)
-    rc = resolve_run_config(agent_name, workspace=workspace, environment=environment)
+    project = project or Project.find(Path.cwd())
+    rc = resolve_run_config(agent_name, project, workspace=workspace, environment=environment)
     client = make_client()
-    session = start_session(rc)
-    toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox)
+    session = start_session(rc, project)
+    toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox, project)
     return Conversation(session, rc.agent, client, toolset)
 
 
 def resume_conversation(
-    session_id: str, *, approver: Approver = deny_all, sandbox: Seatbelt | Unsandboxed | None = None
+    session_id: str,
+    *,
+    project: Project | None = None,
+    approver: Approver = deny_all,
+    sandbox: Seatbelt | Unsandboxed | None = None,
 ) -> Conversation:
     """Reopen a saved session and get it ready for more turns.
 
     The session keeps what it was created with (system prompt, workspace, environment);
     model, temperature, max_steps, and tools come from the agent file as it is *now*,
     and each turn's trace records exactly what that turn used.
+
+    `project` supplies the project's own tools. The agent file is always read from the
+    folder the session was created in (wherever you resume from); only sessions from before
+    that was recorded fall back to `project`'s root, or Project.find() from here.
     """
     sandbox = sandbox or default_sandbox()
     require_sandbox_for_auto_approval(approver, sandbox)
     session = Session.load(SESSIONS_DIR, session_id)  # also repairs an interrupted history
-    agent = resolve_agent(session.agent)
+    caller = project or Project.find(session.config_root or Path.cwd())
+    project = Project(session.config_root or caller.root, caller.extra_tools)
+    agent = resolve_agent(session.agent, project)
     agent["environment"] = session.environment  # what the workspace was set up with, not today's file
     client = make_client()
-    toolset = build_toolset(session, agent.get("tools", []), approver, sandbox)
+    toolset = build_toolset(session, agent.get("tools", []), approver, sandbox, project)
     return Conversation(session, agent, client, toolset)
 
 
@@ -118,13 +132,14 @@ def run(task: str, agent_name: str = "base", **options) -> str:
     return new_conversation(agent_name, **options).turn(task).answer
 
 
-def start_session(rc: RunConfig) -> Session:
+def start_session(rc: RunConfig, project: Project) -> Session:
     """Create a session for `rc` and set its workspace up. The system prompt is pinned here.
 
     If setup fails, the session is removed: one that never got set up has nothing worth keeping.
     """
     session = Session.create(
-        SESSIONS_DIR, rc.agent["name"], rc.system_prompt, agent_version(rc.agent), rc.workspace, rc.environment
+        SESSIONS_DIR, rc.agent["name"], rc.system_prompt, agent_version(rc.agent), rc.workspace, rc.environment,
+        config_root=project.root,
     )
     if rc.environment:
         try:
@@ -135,11 +150,13 @@ def start_session(rc: RunConfig) -> Session:
     return session
 
 
-def build_toolset(session: Session, tools: list[str], approver: Approver, sandbox: Seatbelt | Unsandboxed) -> Toolset:
+def build_toolset(
+    session: Session, tools: list[str], approver: Approver, sandbox: Seatbelt | Unsandboxed, project: Project
+) -> Toolset:
     """The tools for a turn of `session`: confined to its workspace, with its environment's variables.
 
     Built from the session (not the config) so a resumed session works on the same folder
     with the same variables it started with.
     """
     context = ToolContext(workspace=session.workspace, env=session.environment_variables, sandbox=sandbox)
-    return Toolset(tools, Policy(approver), context)
+    return Toolset(tools, Policy(approver), context, project.tools())

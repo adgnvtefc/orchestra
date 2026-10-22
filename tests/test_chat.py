@@ -15,7 +15,7 @@ from tests.fakes import FakeClient, call, reply
 def agents_dir(tmp_path, monkeypatch, fake_tools):
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(config, "AGENTS_DIR", directory)
+    monkeypatch.chdir(tmp_path)  # a temp project: its agents/ is found by walking up from here
     write_agent(directory)
     return directory
 

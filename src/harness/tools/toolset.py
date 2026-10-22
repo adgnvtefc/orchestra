@@ -5,37 +5,55 @@ builtin/ and only depend on base.py.
 """
 
 import json
+from collections.abc import Mapping, Sequence
 
 from harness.policy import Policy
 from harness.tools.base import Tool, ToolContext
 from harness.tools.builtin import BUILTIN_TOOLS
 
-# Every tool that exists, by name. Later, other sources (MCP servers, plugins) add to this too.
+# The built-in tools, by name. A project adds its own via available_tools(extra_tools), so it
+# never has to edit the harness.
 REGISTRY: dict[str, Tool] = {t.name: t for t in BUILTIN_TOOLS}
 
 
+def available_tools(extra_tools: Sequence[Tool] = ()) -> dict[str, Tool]:
+    """The built-ins plus `extra_tools`, by name. A name used twice is an error, never a silent
+    replacement: an agent asking for "bash" must get exactly the bash it expects."""
+    available = dict(REGISTRY)
+    for tool in extra_tools:
+        if tool.name in available:
+            raise ValueError(f"tool name {tool.name!r} is already taken; extra tools need their own names")
+        available[tool.name] = tool
+    return available
+
+
 class Toolset:
-    def __init__(self, names: list[str], policy: Policy, context: ToolContext):
-        """Pick tools from REGISTRY by name. Unknown names fail now, at startup, not mid-run.
+    def __init__(
+        self, names: list[str], policy: Policy, context: ToolContext, available: Mapping[str, Tool] | None = None
+    ):
+        """Pick tools by name from `available` (default: the built-ins). Unknown names fail now,
+        at startup, not mid-run.
 
         `policy` decides whether each call may run; execute() checks it before every call.
         `context` (the workspace, ...) is passed to every tool as its first argument.
         """
-        self.check_names(names)
+        available = REGISTRY if available is None else available
+        self.check_names(names, available)
         # define an internal registry of all the tools we have
-        self.tools = {n: REGISTRY[n] for n in names}
+        self.tools = {n: available[n] for n in names}
 
         # define a policy object for approval
         self.policy = policy
         self.context = context
 
     @staticmethod
-    def check_names(names: list[str]) -> None:
-        """Raise if any name isn't a registered tool. Callable on its own, to validate a config
-        before building anything."""
-        unknown = [n for n in names if n not in REGISTRY]
+    def check_names(names: list[str], available: Mapping[str, Tool] | None = None) -> None:
+        """Raise if any name isn't in `available` (default: the built-ins). Callable on its own,
+        to validate a config before building anything."""
+        available = REGISTRY if available is None else available
+        unknown = [n for n in names if n not in available]
         if unknown:
-            raise ValueError(f"Unknown tool(s) {unknown}. Available tools: {', '.join(REGISTRY)}.")
+            raise ValueError(f"Unknown tool(s) {unknown}. Available tools: {', '.join(available)}.")
 
     def schemas(self) -> list[dict]:
         """What the model sees: only this agent's tools."""

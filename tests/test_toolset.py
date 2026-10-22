@@ -7,7 +7,7 @@ import pytest
 
 from harness.sandbox import Unsandboxed
 from harness.policy import Policy
-from harness.tools import REGISTRY, ToolContext, Toolset
+from harness.tools import REGISTRY, Tool, ToolContext, Toolset, available_tools
 from tests.fakes import NO_HUMAN
 
 
@@ -276,3 +276,40 @@ class TestExecuteReturnsErrorsInsteadOfRaising:
     def test_never_raises_on_garbage(self, ctx, fake_tools, name, arguments):
         result = Toolset(["echo", "boom", "read_file"], NO_HUMAN, ctx).execute(name, arguments)
         assert isinstance(result, str) and result.startswith("Error:")
+
+
+
+def _tool(name, fn=lambda ctx: "custom result"):
+    schema = {"type": "function", "function": {"name": name, "description": "a project's own tool",
+                                               "parameters": {"type": "object", "properties": {}}}}
+    return Tool(fn=fn, schema=schema, permission="allow")
+
+
+class TestExtraTools:
+    """Tools passed in by the caller, so a project can add its own without editing the harness."""
+
+    def test_available_alongside_builtins(self, ctx):
+        toolset = Toolset(["read_file", "weather"], NO_HUMAN, ctx, available_tools([_tool("weather")]))
+        assert [s["function"]["name"] for s in toolset.schemas()] == ["read_file", "weather"]
+        assert toolset.execute("weather", "{}") == "custom result"
+
+    def test_only_listed_ones_are_given(self, ctx):
+        toolset = Toolset(["read_file"], NO_HUMAN, ctx, available_tools([_tool("weather")]))
+        assert toolset.execute("weather", "{}").startswith("Error: unknown tool")
+
+    def test_name_collision_is_an_error(self):
+        with pytest.raises(ValueError, match="'bash' is already taken"):
+            available_tools([_tool("bash")])
+
+    def test_two_extras_with_one_name(self):
+        with pytest.raises(ValueError, match="already taken"):
+            available_tools([_tool("weather"), _tool("weather")])
+
+    def test_check_names_knows_about_extras(self):
+        Toolset.check_names(["weather"], available_tools([_tool("weather")]))  # no error
+        with pytest.raises(ValueError, match="Available tools: .*weather"):
+            Toolset.check_names(["wether"], available_tools([_tool("weather")]))
+
+    def test_builtins_registry_is_untouched(self):
+        available_tools([_tool("weather")])
+        assert "weather" not in REGISTRY

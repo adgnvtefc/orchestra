@@ -55,7 +55,8 @@ class TestCreate:
         assert meta["agent"] == session.agent == "base"
         assert meta["agent_version"] == "abc123def456"
         assert "created" in meta
-        assert set(meta) == {"id", "agent", "agent_version", "workspace", "environment", "created"}  # nothing that changes later
+        assert set(meta) == {"id", "agent", "agent_version", "workspace", "config_root", "environment", "created"}
+        assert meta["config_root"] is None  # not given here
         assert meta["environment"] is None
 
     def test_system_prompt_is_message_zero(self, session):

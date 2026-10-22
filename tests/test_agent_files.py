@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 
 from harness.sandbox import Unsandboxed
-from harness.config import AGENTS_DIR, load_agent_config
+from harness.config import load_agent_config
+
+AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"  # this repo's own agents
 from harness.tools import ToolContext, Toolset
 from tests.fakes import NO_HUMAN
 

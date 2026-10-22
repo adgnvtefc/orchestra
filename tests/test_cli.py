@@ -4,6 +4,7 @@ import pytest
 
 from harness import config, orchestrator
 from harness.interfaces import cli
+from harness.config import Project
 from harness.policy import approve_all, deny_all
 from harness.sandbox import Unsandboxed, default_sandbox
 from tests.fakes import FakeClient, reply
@@ -13,7 +14,7 @@ from tests.fakes import FakeClient, reply
 def agents_dir(tmp_path, monkeypatch):
     directory = tmp_path / "agents"
     directory.mkdir()
-    monkeypatch.setattr(config, "AGENTS_DIR", directory)
+    monkeypatch.chdir(tmp_path)  # a temp project: its agents/ is found by walking up from here
     for name in ("base", "reader"):
         (directory / f"{name}.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\n---\nPrompt.\n")
     return directory
@@ -40,17 +41,19 @@ class TestTerminalApprover:
 
     def test_shows_tool_and_arguments_before_asking(self, approve, capsys):
         cli.terminal_approver("bash", {"command": "echo visible-command", "timeout": 60})
-        out = capsys.readouterr().out
-        assert "agent wants to run bash" in out
-        assert "command: echo visible-command" in out
-        assert "timeout: 60" in out
-        assert approve == ["  allow? [y/N] "]
+        captured = capsys.readouterr()
+        assert "agent wants to run bash" in captured.err
+        assert "command: echo visible-command" in captured.err
+        assert "timeout: 60" in captured.err
+        assert captured.err.endswith("  allow? [y/N] ")  # the question, last, without a newline
+        assert captured.out == ""  # stdout is only for the answer
+        assert len(approve) == 1  # asked once
 
     def test_long_argument_values_are_shortened(self, approve, capsys):
         cli.terminal_approver("write_file", {"content": "x" * 5000})
-        out = capsys.readouterr().out
-        assert "x" * 300 + "..." in out
-        assert "x" * 301 not in out
+        err = capsys.readouterr().err
+        assert "x" * 300 + "..." in err
+        assert "x" * 301 not in err
 
 
 class TestTurnSummary:
@@ -74,11 +77,13 @@ class TestShowStep:
 
     def test_prints_the_call_and_its_result(self, capsys):
         cli.show_step(self.tool_call())
-        assert capsys.readouterr().out == '[step 2] echo({"text": "hi"})\n  -> hello\n'
+        captured = capsys.readouterr()
+        assert captured.err == '[step 2] echo({"text": "hi"})\n  -> hello\n'
+        assert captured.out == ""
 
     def test_long_results_are_previewed(self, capsys):
         cli.show_step(self.tool_call(result="z" * 500))
-        result_line = capsys.readouterr().out.splitlines()[1]
+        result_line = capsys.readouterr().err.splitlines()[1]
         assert result_line == "  -> " + "z" * 200 + "..."
 
     @pytest.mark.parametrize("kind", ["run_start", "model_response", "run_end"])
@@ -110,11 +115,11 @@ class TestMain:
         monkeypatch.setattr(cli, "new_conversation", fake_new)
         return calls
 
-    def test_joins_words_into_one_task(self, run_calls, capsys):
+    def test_joins_words_into_one_task(self, run_calls, agents_dir, capsys):
         cli.main(["list", "the", "files"])
         assert run_calls == [
-            {"task": "list the files", "agent_name": "base", "approver": cli.terminal_approver,
-             "sandbox": default_sandbox(), "workspace": None, "environment": None}
+            {"task": "list the files", "agent_name": "base", "project": Project(agents_dir.parent.resolve()),
+             "approver": cli.terminal_approver, "sandbox": default_sandbox(), "workspace": None, "environment": None}
         ]
         assert capsys.readouterr().out.strip() == "printed answer"
 
@@ -135,6 +140,34 @@ class TestMain:
     def test_unattended_means_deny_all(self, run_calls):
         cli.main(["--unattended", "hi"])
         assert run_calls[0]["approver"] is deny_all
+
+    def test_config_root_found_from_a_subfolder(self, run_calls, agents_dir, monkeypatch):
+        sub = agents_dir.parent / "deep" / "er"
+        sub.mkdir(parents=True)
+        monkeypatch.chdir(sub)
+        cli.main(["hi"])
+        assert run_calls[0]["project"].root == agents_dir.parent.resolve()
+
+    def test_config_root_flag(self, run_calls, tmp_path, monkeypatch):
+        other = tmp_path / "other-project"
+        (other / "agents").mkdir(parents=True)
+        (other / "agents" / "base.md").write_text("---\nmodel: m\n---\nP\n")
+        monkeypatch.chdir(tmp_path.parent)  # somewhere with no agents/ of its own
+        cli.main(["--config-root", str(other), "hi"])
+        assert run_calls[0]["project"].root == other
+
+    def test_no_agents_folder_anywhere(self, run_calls, tmp_path, monkeypatch, capsys):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.chdir(empty)
+        def nothing_found(start, extra_tools=()):
+            raise FileNotFoundError(f"no agents/ folder in {start}")
+
+        monkeypatch.setattr(cli.Project, "find", staticmethod(nothing_found))
+        with pytest.raises(SystemExit):
+            cli.main(["hi"])
+        assert "no agents/ folder" in capsys.readouterr().err
+        assert run_calls == []
 
     def test_yes_means_approve_all(self, run_calls):
         cli.main(["--yes", "hi"])
@@ -226,16 +259,17 @@ class TestRunOutput:
 
     def test_steps_are_shown_while_the_turn_runs(self, agents_dir, sessions_dir, monkeypatch, capsys):
         from tests.fakes import call
-        (config.AGENTS_DIR / "base.md").write_text(
+        (agents_dir / "base.md").write_text(
             "---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - write_file\n---\nPrompt.\n"
         )
         replies = [reply(tool_calls=[call("write_file", {"path": "a.txt", "content": "x"})]), reply("done")]
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(replies))
         cli.main(["write", "it"])
-        out = capsys.readouterr().out
-        assert '[step 1] write_file({"path": "a.txt", "content": "x"})' in out
-        assert "  -> Wrote 1 characters to a.txt." in out
-        assert out.strip().endswith("done")  # the answer comes last
+        captured = capsys.readouterr()
+        assert '[step 1] write_file({"path": "a.txt", "content": "x"})' in captured.err
+        assert "  -> Wrote 1 characters to a.txt." in captured.err
+        # The README's promise: with tool calls and all, stdout is the answer and nothing else.
+        assert captured.out == "done\n"
 
     def test_answer_stdout_rest_stderr(self, agents_dir, sessions_dir, monkeypatch, capsys):
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("the answer")]))

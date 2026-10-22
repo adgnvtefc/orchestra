@@ -5,10 +5,11 @@ Layout:
   toolset.py  machinery: REGISTRY of all tools + Toolset, the subset one agent gets
   builtin/    tool implementations; they import base.py and nothing else from here
 
-To add a tool: write it in a builtin/ module, then add it to BUILTIN_TOOLS in builtin/__init__.py.
+To add a built-in tool: write it in a builtin/ module, then add it to BUILTIN_TOOLS in builtin/__init__.py.
+To add a tool without touching the harness: Project(root, extra_tools=[...]) (see config.py).
 """
 
 from harness.tools.base import Tool, ToolContext
-from harness.tools.toolset import REGISTRY, Toolset
+from harness.tools.toolset import REGISTRY, Toolset, available_tools
 
-__all__ = ["REGISTRY", "Tool", "ToolContext", "Toolset"]
+__all__ = ["REGISTRY", "Tool", "ToolContext", "Toolset", "available_tools"]
