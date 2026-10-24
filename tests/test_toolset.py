@@ -5,9 +5,9 @@ import re
 
 import pytest
 
-from harness.sandbox import Unsandboxed
-from harness.policy import Policy
-from harness.tools import REGISTRY, Tool, ToolContext, Toolset, available_tools
+from orchestra.sandbox import Unsandboxed
+from orchestra.policy import Policy
+from orchestra.tools import REGISTRY, Tool, ToolContext, Toolset, available_tools
 from tests.fakes import NO_HUMAN
 
 

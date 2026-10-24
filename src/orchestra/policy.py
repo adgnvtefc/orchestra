@@ -13,7 +13,7 @@ can import it without creating an import cycle.
 from typing import TYPE_CHECKING, Callable, Literal
 
 if TYPE_CHECKING:  # only for type hints; never imported at runtime
-    from harness.tools.base import Tool
+    from orchestra.tools.base import Tool
 
 # allow: run without asking.  ask: the approver decides.
 Permission = Literal["allow", "ask"]

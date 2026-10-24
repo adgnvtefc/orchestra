@@ -1,13 +1,13 @@
-"""harness chat: many turns in one session, resuming, and surviving interrupts and errors."""
+"""orchestra chat: many turns in one session, resuming, and surviving interrupts and errors."""
 
 import json
 
 import pytest
 
-from harness import config, orchestrator
-from harness.interfaces import cli
-from harness.session import INTERRUPTED
-from harness.tools import REGISTRY, Tool
+from orchestra import config, orchestrator
+from orchestra.interfaces import cli
+from orchestra.session import INTERRUPTED
+from orchestra.tools import REGISTRY, Tool
 from tests.fakes import FakeClient, call, reply
 
 
@@ -67,7 +67,7 @@ class TestNewChat:
         cli.main(["chat"])
         out = capsys.readouterr().out
         assert "hello there" in out
-        assert "harness chat --resume" in out  # tells you how to come back
+        assert "orchestra chat --resume" in out  # tells you how to come back
 
     @pytest.mark.parametrize("command", ["/exit", "/quit"])
     def test_exit_command(self, agents_dir, sessions_dir, typed, model, command):

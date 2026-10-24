@@ -13,16 +13,16 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from harness.agent import run_agent
-from harness.config import Project, RunConfig, resolve_agent, resolve_run_config
-from harness.environment import provision
-from harness.policy import Approver, Policy, deny_all, require_sandbox_for_auto_approval
-from harness.provenance import agent_version
-from harness.sandbox import Seatbelt, Unsandboxed, default_sandbox
-from harness.providers import make_client
-from harness.session import Session
-from harness.tools import ToolContext, Toolset
-from harness.tracer import Tracer
+from orchestra.agent import run_agent
+from orchestra.config import Project, RunConfig, resolve_agent, resolve_run_config
+from orchestra.environment import provision
+from orchestra.policy import Approver, Policy, deny_all, require_sandbox_for_auto_approval
+from orchestra.provenance import agent_version
+from orchestra.sandbox import Seatbelt, Unsandboxed, default_sandbox
+from orchestra.providers import make_client
+from orchestra.session import Session
+from orchestra.tools import ToolContext, Toolset
+from orchestra.tracer import Tracer
 
 # Where sessions (conversations, traces, default workspaces) are stored. Deliberately *outside*
 # this project: tools that walk up looking for their config (git, pytest, uv) would otherwise

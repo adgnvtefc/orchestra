@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from harness import config, orchestrator
-from harness.config import Project
-from harness.policy import deny_all
-from harness.tools import Toolset
+from orchestra import config, orchestrator
+from orchestra.config import Project
+from orchestra.policy import deny_all
+from orchestra.tools import Toolset
 from tests.fakes import FakeClient, reply
 
 YES = lambda name, arguments: None  # an approver that approves everything (tests only)
@@ -104,7 +104,7 @@ class TestRun:
 
 
 class TestSessionsAndTraces:
-    """Each `harness "task"` run is a new session with one turn: sessions/<id>/turn-001.jsonl."""
+    """Each `orchestra "task"` run is a new session with one turn: sessions/<id>/turn-001.jsonl."""
 
     @pytest.fixture
     def fake_model(self, agents_dir, monkeypatch):
@@ -234,7 +234,7 @@ class TestWorkspaces:
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())  # no session either
 
     def test_workspace_is_part_of_the_agent_version(self, tmp_path):
-        from harness.provenance import agent_version
+        from orchestra.provenance import agent_version
         base = {"model": "m", "system_prompt": "p"}
         assert agent_version(base) != agent_version({**base, "workspace": str(tmp_path)})
 
@@ -353,7 +353,7 @@ class TestConversation:
         assert [e["event"] for e in seen] == ["run_start", "model_response", "run_end"]
 
     def test_sandboxed_by_default(self, agents_dir, monkeypatch):
-        from harness.sandbox import default_sandbox
+        from orchestra.sandbox import default_sandbox
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
         conv = orchestrator.new_conversation("base")
@@ -364,8 +364,8 @@ class TestConversation:
 
     @pytest.mark.parametrize("start", ["new", "resume"])
     def test_auto_approval_without_sandbox_is_refused_up_front(self, agents_dir, sessions_dir, monkeypatch, start):
-        from harness.policy import approve_all
-        from harness.sandbox import Unsandboxed
+        from orchestra.policy import approve_all
+        from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
         existing = orchestrator.new_conversation("base").session.id if start == "resume" else None
@@ -379,7 +379,7 @@ class TestConversation:
         assert after == before  # nothing was created
 
     def test_environment_sandbox_rules_are_applied(self, agents_dir, tmp_path, monkeypatch):
-        from harness.sandbox import Seatbelt, available
+        from orchestra.sandbox import Seatbelt, available
         if not available():
             pytest.skip("needs macOS sandbox-exec")
         (tmp_path / "environments").mkdir()
@@ -391,7 +391,7 @@ class TestConversation:
         assert (sandbox.network, sandbox.readable) == (True, (Path("/opt/x"),))  # the interface's Seatbelt + the env's rules
 
     def test_sandbox_is_passed_through(self, agents_dir, monkeypatch):
-        from harness.sandbox import Unsandboxed
+        from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
         assert orchestrator.new_conversation("base", sandbox=Unsandboxed()).toolset.context.sandbox == Unsandboxed()
@@ -422,7 +422,7 @@ class TestConversation:
         assert not orchestrator.session_exists("no-such-session")
 
     def test_missing_key_reaches_the_caller_as_an_exception(self, agents_dir, monkeypatch):
-        from harness.providers import MissingAPIKey
+        from orchestra.providers import MissingAPIKey
         write_agent(agents_dir, "base")
         monkeypatch.delenv("OMLX_API_KEY", raising=False)
         try:
@@ -443,7 +443,7 @@ class TestLibraryUse:
     """Using the harness from another project: its own config root, its own tools."""
 
     def test_extra_tool_end_to_end(self, agents_dir, monkeypatch):
-        from harness.tools import Tool
+        from orchestra.tools import Tool
         from tests.fakes import call
 
         def weather(ctx, city: str) -> str:

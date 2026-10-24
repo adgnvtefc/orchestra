@@ -10,8 +10,8 @@ import urllib.request
 import pytest
 from dotenv import load_dotenv
 
-from harness import orchestrator
-from harness.policy import approve_all
+from orchestra import orchestrator
+from orchestra.policy import approve_all
 
 pytestmark = pytest.mark.live
 
@@ -32,7 +32,7 @@ def require_server():
 
 
 def test_lists_empty_workspace():
-    # environment="none": base's python-dev environment would put .venv/ and .harness/ in the
+    # environment="none": base's python-dev environment would put .venv/ and .orchestra/ in the
     # workspace, and an agent that runs `ls -la` would rightly say it isn't empty.
     answer = orchestrator.run("What files are in the workspace? Answer briefly.", approver=approve_all, environment="none")
     assert "empty" in answer.lower() or "no files" in answer.lower(), f"model's answer: {answer!r}"

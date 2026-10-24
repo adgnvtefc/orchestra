@@ -2,7 +2,7 @@
 
 import pytest
 
-from harness.providers import MissingAPIKey, call_model, omlx
+from orchestra.providers import MissingAPIKey, call_model, omlx
 from tests.fakes import FakeClient, reply
 
 

@@ -10,7 +10,7 @@ import json
 
 from openai.types.chat import ChatCompletion
 
-from harness.policy import Policy, deny_all
+from orchestra.policy import Policy, deny_all
 
 _ids = itertools.count(1)
 

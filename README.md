@@ -1,4 +1,4 @@
-# harness
+# orchestra
 
 This is a learning project: an agent harness built from scratch, running local models on
 Apple Silicon. It runs an agent loop (model ↔ tools) with sessions, traces, environments,
@@ -17,7 +17,7 @@ and a macOS sandbox. For how it works inside, see [visual_representation.md](vis
 ```bash
 uv sync                      # install dependencies
 cp .env.example .env         # then put your oMLX API key in .env
-uv run harness "What is 6 times 7?"
+uv run orchestra "What is 6 times 7?"
 ```
 
 `.env` holds:
@@ -31,15 +31,15 @@ The agent's commands never see these: bash runs with an allowlisted environment.
 
 ## Using it
 
-There are two commands. A plain `harness "task"` is short for `harness run "task"`.
+There are two commands. A plain `orchestra "task"` is short for `orchestra run "task"`.
 
 ```bash
-harness "task"                       # one task: a new session with one turn, then exit
-harness chat                         # a conversation: type a task, get an answer, repeat
-harness chat --resume SESSION_ID     # continue a saved conversation
+orchestra "task"                       # one task: a new session with one turn, then exit
+orchestra chat                         # a conversation: type a task, get an answer, repeat
+orchestra chat --resume SESSION_ID     # continue a saved conversation
 ```
 
-(Inside this repo, prefix with `uv run`, e.g. `uv run harness chat`.)
+(Inside this repo, prefix with `uv run`, e.g. `uv run orchestra chat`.)
 
 **Where config comes from:** the harness looks for the nearest folder, at or above where you
 run it, that has an `agents/` folder (the way git finds `.git`). That folder is the *config
@@ -72,26 +72,26 @@ it; `--unattended`/`--yes`/`--no-sandbox` can, since they apply per run.
 
 ```bash
 # Interactive: you approve each bash command (y/N)
-uv run harness "Write primes.py that prints the first 10 primes and run it"
+uv run orchestra "Write primes.py that prints the first 10 primes and run it"
 
 # Fully unattended, safe because bash is sandboxed to the session's workspace
-uv run harness --yes "Create dates.py with a parse_date function, write pytest tests, run them"
+uv run orchestra --yes "Create dates.py with a parse_date function, write pytest tests, run them"
 
 # Unattended, no bash at all (file tools still work)
-uv run harness --unattended "Create notes.md listing three facts about primes"
+uv run orchestra --unattended "Create notes.md listing three facts about primes"
 
 # Work on an existing folder (the agent can edit its files)
-uv run harness --workspace ~/projects/some-app "Find and fix the failing test"
+uv run orchestra --workspace ~/projects/some-app "Find and fix the failing test"
 
 # A plain workspace, no Python environment set up
-uv run harness --environment none "What files are in the workspace?"
+uv run orchestra --environment none "What files are in the workspace?"
 
 # A conversation, continued later
-uv run harness chat
-uv run harness chat --resume 2026-10-21T18-55-51_base_66ec
+uv run orchestra chat
+uv run orchestra chat --resume 2026-10-21T18-55-51_base_66ec
 
 # Capture only the answer in a script (everything else goes to stderr)
-answer=$(uv run harness --yes "What is 17 * 23? Just the number." 2>/dev/null)
+answer=$(uv run orchestra --yes "What is 17 * 23? Just the number." 2>/dev/null)
 ```
 
 ### What you see
@@ -170,12 +170,12 @@ different environment is refused, never set up again over the top.
 ### Project tools: `tools.py`
 
 A project can add its own tools by putting a `tools.py` next to its `agents/` folder that
-defines `TOOLS`, a list of `harness.tools.Tool`. The CLI (and `Project.find` / `Project.at`
+defines `TOOLS`, a list of `orchestra.tools.Tool`. The CLI (and `Project.find` / `Project.at`
 from Python) load it automatically, so an agent can list those tools by name like built-ins:
 
 ```python
 # tools.py, in your project's root
-from harness.tools import Tool
+from orchestra.tools import Tool
 
 def stock_price(ctx, ticker: str) -> str:
     return lookup_price(ticker)
@@ -207,7 +207,7 @@ deliberately outside this project:
 ```
 
 Each trace's first line records what produced it: the agent version (a hash of its
-config), which harness code ran (its version, how it was installed, and its git commit when
+config), which orchestra code ran (its version, how it was installed, and its git commit when
 knowable: exact for a source checkout or a git install), the approver,
 and the sandbox.
 
@@ -219,10 +219,10 @@ first, its JSON schema (what the model sees), and a permission. Agents list them
 
 ```python
 from pathlib import Path
-from harness.config import Project
-from harness.orchestrator import new_conversation
-from harness.policy import approve_all
-from harness.tools import Tool
+from orchestra.config import Project
+from orchestra.orchestrator import new_conversation
+from orchestra.policy import approve_all
+from orchestra.tools import Tool
 
 def weather(ctx, city: str) -> str:
     return f"sunny in {city}"
@@ -253,7 +253,7 @@ An extra tool can't reuse a built-in tool's name (that's an error, not a replace
 
 As a library, the harness only *reads* `OMLX_API_KEY`/`OMLX_BASE_URL` from the environment;
 loading a `.env` file is the CLI's job, so set them however your program likes. A missing
-key raises `harness.providers.MissingAPIKey`, an ordinary exception your program can catch.
+key raises `orchestra.providers.MissingAPIKey`, an ordinary exception your program can catch.
 `resume_conversation(session_id, project=project)` continues a saved session (its agent file
 always comes from the folder the session was created in).
 

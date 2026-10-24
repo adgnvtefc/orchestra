@@ -2,11 +2,11 @@
 
 import pytest
 
-from harness import config, orchestrator
-from harness.interfaces import cli
-from harness.config import Project
-from harness.policy import approve_all, deny_all
-from harness.sandbox import Unsandboxed, default_sandbox
+from orchestra import config, orchestrator
+from orchestra.interfaces import cli
+from orchestra.config import Project
+from orchestra.policy import approve_all, deny_all
+from orchestra.sandbox import Unsandboxed, default_sandbox
 from tests.fakes import FakeClient, reply
 
 
@@ -228,7 +228,7 @@ class TestMain:
         with pytest.raises(SystemExit) as exit_info:
             cli.main(argv)
         assert exit_info.value.code == 2
-        assert "usage: harness" in capsys.readouterr().err
+        assert "usage: orchestra" in capsys.readouterr().err
         assert run_calls == []
 
     def test_help_lists_commands(self, run_calls, capsys):
@@ -249,7 +249,7 @@ class TestMain:
         assert run_calls[0]["task"] == "list files"
 
     def test_reads_real_command_line_by_default(self, run_calls, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["harness", "from", "argv"])
+        monkeypatch.setattr("sys.argv", ["orchestra", "from", "argv"])
         cli.main()
         assert run_calls[0]["task"] == "from argv"
 
@@ -270,7 +270,7 @@ class TestApiKey:
 
 
 class TestRunOutput:
-    """`harness "task"` end to end: the answer on stdout, everything else on stderr."""
+    """`orchestra "task"` end to end: the answer on stdout, everything else on stderr."""
 
     def test_steps_are_shown_while_the_turn_runs(self, agents_dir, sessions_dir, monkeypatch, capsys):
         from tests.fakes import call
@@ -306,7 +306,7 @@ class TestProjectTools:
     """The CLI runs agents that use a project's own tools, from the project's tools.py."""
 
     TOOLS_PY = (
-        "from harness.tools import Tool\n"
+        "from orchestra.tools import Tool\n"
         "def weather(ctx, city: str) -> str:\n"
         "    return f'sunny in {city}'\n"
         "TOOLS = [Tool(fn=weather, permission='allow', schema={'type': 'function', 'function': {\n"

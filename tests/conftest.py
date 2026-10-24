@@ -2,9 +2,9 @@
 
 import pytest
 
-from harness import orchestrator
-from harness.sandbox import Unsandboxed
-from harness.tools import REGISTRY, Tool, ToolContext
+from orchestra import orchestrator
+from orchestra.sandbox import Unsandboxed
+from orchestra.tools import REGISTRY, Tool, ToolContext
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def no_dotenv(monkeypatch):
     """The CLI loads .env at startup; in tests that would pull your real API key into the
     test process. Every test (autouse) gets a no-op instead. Returns the list of calls."""
     calls = []
-    monkeypatch.setattr("harness.interfaces.cli.load_dotenv", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr("orchestra.interfaces.cli.load_dotenv", lambda *args, **kwargs: calls.append(args))
     return calls
 
 

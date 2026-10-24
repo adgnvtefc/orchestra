@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from harness.tools.base import Tool, ToolContext, truncate
+from orchestra.tools.base import Tool, ToolContext, truncate
 
 
 def _resolve(ctx: ToolContext, path: str) -> Path:

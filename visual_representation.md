@@ -1,4 +1,4 @@
-# How the harness works
+# How orchestra works
 
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
@@ -15,7 +15,7 @@ one checkpoint.
 
 ```mermaid
 flowchart TD
-    user(["You<br/>harness 'task'  (one turn)<br/>harness chat  /  chat --resume ID"])
+    user(["You<br/>orchestra 'task'  (one turn)<br/>orchestra chat  /  chat --resume ID"])
 
     subgraph iface["Interface: interfaces/cli.py (all terminal input/output)"]
         direction LR
@@ -71,7 +71,7 @@ flowchart TD
 
 ## 2. One turn, step by step
 
-`harness "task"` is a new session with one turn. `harness chat` loops: read a line, run a
+`orchestra "task"` is a new session with one turn. `orchestra chat` loops: read a line, run a
 turn, print the answer, repeat; every turn adds to the same session. `chat --resume ID`
 reloads a saved session (repairing an interrupted history) and keeps going. The diagram
 shows one turn of a new session; a resumed or later turn skips the creation steps.
@@ -93,7 +93,7 @@ sequenceDiagram
     participant R as Tracer
     participant S as Session
 
-    You->>C: harness "write primes.py and run it"
+    You->>C: orchestra "write primes.py and run it"
     C->>O: new_conversation(agent, approver=terminal_approver)
     O->>O: check config, workspace, environment, tool names<br/>(any problem fails here, before anything is created)
     O->>S: Session.create: new folder,<br/>system prompt (+ environment prompt) = message 0
@@ -217,7 +217,7 @@ prompt: |                               # appended to the system prompt automati
 ```
 
 - **Which one:** `--environment NAME` (or `none`) wins over `environment:` in the agent file.
-- **It belongs to the workspace:** provisioning writes `<workspace>/.harness/environment.json`
+- **It belongs to the workspace:** provisioning writes `<workspace>/.orchestra/environment.json`
   (name + version) last, after every command succeeded. Same version already there: skipped
   (a shared workspace is set up once). A different version: refused, never set up over the top.
 - **Same environment for commands and setup:** both run with `ToolContext.command_env()`, the
@@ -264,7 +264,7 @@ workspace is a clean folder. `~/projects/orchestra-sessions` is a symlink to it.
 ## 7. Chat: many turns, one session
 
 ```text
-$ harness chat                        $ harness chat --resume 2026-10-20T18-55-51_base_66ec
+$ orchestra chat                        $ orchestra chat --resume 2026-10-20T18-55-51_base_66ec
 you> Create fruits.txt ...            you> which one did you add last time?
 you> Add a fourth fruit to it ...     -> "mango", remembered from the earlier process
 ```
@@ -355,8 +355,8 @@ A hash *identifies* content; it doesn't store it.
 | Field | Meaning | Recoverable? |
 |---|---|---|
 | `agent_version` | 12-char hash of the agent definition (name excluded): same content, same version | Yes: the full definition is in `run_start.config` |
-| `harness.version` / `.installed` | the harness package's version; how it got there: `checkout` (its own source), `git` (a git install), or `path` (a folder or wheel) | |
-| `harness.commit` / `harness.dirty` | the commit: from git in a checkout (with `dirty`), from the installer's record for a git install (never dirty), `null` for a path install | Via `git checkout`, only if `dirty` is false |
+| `orchestra.version` / `.installed` | the harness package's version; how it got there: `checkout` (its own source), `git` (a git install), or `path` (a folder or wheel) | |
+| `orchestra.commit` / `orchestra.dirty` | the commit: from git in a checkout (with `dirty`), from the installer's record for a git install (never dirty), `null` for a path install | Via `git checkout`, only if `dirty` is false |
 | `config.model` (+ `model` per response) | the model asked for, and the one the server says answered | Only if the same weights still exist |
 
 ---
@@ -364,7 +364,7 @@ A hash *identifies* content; it doesn't store it.
 ## 10. How the code is organized
 
 ```text
-src/harness/
+src/orchestra/
   interfaces/   cli.py          where a human talks to the harness (terminal now; a web UI later)
   orchestrator.py               wiring: Conversation, new/resume, no terminal I/O
   agent.py                      the loop
@@ -412,7 +412,7 @@ flowchart TD
 
 What's planned, in rough order. Each becomes a diagram change when it lands.
 
-- **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
+- **Reading traces:** `orchestra show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
 - **Context management:** compaction when the conversation nears the 32k window.
 - **Provider adapters:** oMLX and native Anthropic behind one interface.

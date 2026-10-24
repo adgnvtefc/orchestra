@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from harness import provenance
-from harness.provenance import agent_version, collect, describe_install, find_source_checkout, git_state
+from orchestra import provenance
+from orchestra.provenance import agent_version, collect, describe_install, find_source_checkout, git_state
 
 CONFIG = {"name": "base", "model": "m", "temperature": 0.6, "max_steps": 20, "tools": ["bash"], "system_prompt": "Hi."}
 
@@ -102,22 +102,22 @@ class TestGitState:
 class TestCollect:
     def test_fields(self):
         record = collect(CONFIG)
-        assert set(record) == {"agent_version", "harness"}
+        assert set(record) == {"agent_version", "orchestra"}
         assert record["agent_version"] == agent_version(CONFIG)
-        assert {"version", "installed", "commit", "dirty"} <= set(record["harness"])
+        assert {"version", "installed", "commit", "dirty"} <= set(record["orchestra"])
 
-    def test_harness_version_is_measured_once_per_process(self, monkeypatch):
-        provenance.harness_version.cache_clear()
+    def test_orchestra_version_is_measured_once_per_process(self, monkeypatch):
+        provenance.orchestra_version.cache_clear()
         calls = []
         monkeypatch.setattr(provenance, "git_state", lambda repo: calls.append(repo) or {"commit": "c", "dirty": False})
         collect(CONFIG)
         collect(CONFIG)
         assert len(calls) == 1
-        provenance.harness_version.cache_clear()  # don't leak the fake value into other tests
+        provenance.orchestra_version.cache_clear()  # don't leak the fake value into other tests
 
     def test_this_repo_is_measured(self):
         # The real harness repo: a 40-char commit, and a dirty flag that's a real bool.
-        harness = collect(CONFIG)["harness"]
+        harness = collect(CONFIG)["orchestra"]
         assert re.fullmatch(r"[0-9a-f]{40}", harness["commit"])
         assert isinstance(harness["dirty"], bool)
 
@@ -155,8 +155,8 @@ class TestFindSourceCheckout:
         (folder / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
 
     def test_inside_the_harness_repo(self, tmp_path):
-        self.write_project(tmp_path, "harness")
-        code = tmp_path / "src" / "harness" / "provenance.py"
+        self.write_project(tmp_path, "orchestra")
+        code = tmp_path / "src" / "orchestra" / "provenance.py"
         code.parent.mkdir(parents=True)
         code.write_text("")
         assert find_source_checkout(code) == tmp_path.resolve()
@@ -165,7 +165,7 @@ class TestFindSourceCheckout:
         # The bug this exists to prevent: an installed copy inside another project's .venv
         # must never be mistaken for the harness repo (git there gives *that* project's commit).
         self.write_project(tmp_path, "consumer")
-        code = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "harness" / "provenance.py"
+        code = tmp_path / ".venv" / "lib" / "python3.12" / "site-packages" / "orchestra" / "provenance.py"
         code.parent.mkdir(parents=True)
         code.write_text("")
         assert find_source_checkout(code) is None
@@ -178,7 +178,7 @@ class TestFindSourceCheckout:
 
     def test_this_repo(self):
         from pathlib import Path
-        import harness.provenance as module
+        import orchestra.provenance as module
         root = Path(module.__file__).resolve().parents[2]
         assert find_source_checkout(Path(module.__file__)) == root
 

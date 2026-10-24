@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from harness.tools.base import MAX_OUTPUT_CHARS, Tool, truncate
+from orchestra.tools.base import MAX_OUTPUT_CHARS, Tool, truncate
 
 
 class TestTool:
@@ -26,7 +26,7 @@ class TestTool:
 class TestToolContext:
     def test_sandbox_is_required(self, tmp_path):
         # No default: forgetting it is an error, not a silently unsandboxed bash.
-        from harness.tools import ToolContext
+        from orchestra.tools import ToolContext
         with pytest.raises(TypeError, match="sandbox"):
             ToolContext(workspace=tmp_path)
 

@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from harness import provenance
+from orchestra import provenance
 
 if TYPE_CHECKING:  # only for type hints; never imported at runtime
     from openai.types.chat import ChatCompletion, ChatCompletionMessageToolCall

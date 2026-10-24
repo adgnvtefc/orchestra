@@ -4,7 +4,7 @@ import os
 import signal
 import subprocess
 
-from harness.tools.base import Tool, ToolContext, truncate
+from orchestra.tools.base import Tool, ToolContext, truncate
 
 
 def bash(ctx: ToolContext, command: str, timeout: int = 30) -> str:

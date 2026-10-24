@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from harness import sandbox
-from harness.sandbox import SandboxRules, Seatbelt, Unsandboxed, seatbelt_profile
+from orchestra import sandbox
+from orchestra.sandbox import SandboxRules, Seatbelt, Unsandboxed, seatbelt_profile
 
 macos_only = pytest.mark.skipif(not sandbox.available(), reason="needs macOS sandbox-exec")
 

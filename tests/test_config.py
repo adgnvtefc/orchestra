@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from harness import config
-from harness.config import Project, load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
-from harness.environment import EnvironmentSetupError
+from orchestra import config
+from orchestra.config import Project, load_agent_config, resolve_environment, resolve_run_config, resolve_workspace
+from orchestra.environment import EnvironmentSetupError
 
 
 @pytest.fixture
@@ -222,7 +222,7 @@ class TestProjectFind:
 
 class TestExtraToolNames:
     def test_agent_may_list_an_extra_tool(self, config_dirs, tmp_path):
-        from harness.tools import Tool
+        from orchestra.tools import Tool
         weather = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "weather"}}, permission="allow")
         (tmp_path / "agents" / "forecaster.md").write_text("---\nmodel: m\ntools:\n  - weather\n---\nP\n")
         assert resolve_run_config("forecaster", Project(tmp_path, (weather,))).agent["tools"] == ["weather"]
@@ -237,7 +237,7 @@ class TestProject:
         assert (project.agents_dir, project.environments_dir) == (tmp_path / "agents", tmp_path / "environments")
 
     def test_find_keeps_extra_tools(self, tmp_path):
-        from harness.tools import Tool
+        from orchestra.tools import Tool
         (tmp_path / "agents").mkdir()
         weather = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "weather"}}, permission="allow")
         project = Project.find(tmp_path, [weather])
@@ -246,7 +246,7 @@ class TestProject:
 
 
 TOOLS_PY = '''
-from harness.tools import Tool
+from orchestra.tools import Tool
 
 def weather(ctx, city: str) -> str:
     return f"sunny in {city}"
@@ -283,7 +283,7 @@ class TestProjectToolsFile:
         assert Project.find(self.project(tmp_path, tools_py=None)).extra_tools == ()
 
     def test_passed_tools_are_added(self, tmp_path):
-        from harness.tools import Tool
+        from orchestra.tools import Tool
         extra = Tool(fn=lambda ctx: "", schema={"type": "function", "function": {"name": "extra"}}, permission="allow")
         assert [t.name for t in Project.find(self.project(tmp_path), [extra]).extra_tools] == ["weather", "extra"]
 
@@ -294,7 +294,7 @@ class TestProjectToolsFile:
         ("def broken(:\n", "couldn't be loaded: SyntaxError"),
     ])
     def test_problems_name_the_file(self, tmp_path, tools_py, error):
-        from harness.config import ProjectToolsError
+        from orchestra.config import ProjectToolsError
         with pytest.raises(ProjectToolsError, match=error) as err:
             Project.find(self.project(tmp_path, tools_py))
         assert "tools.py" in str(err.value)

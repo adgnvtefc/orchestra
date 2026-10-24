@@ -18,7 +18,7 @@ the agent no steps. Setup commands run without approval, because they come from 
 config file you wrote (trusted), not from the model (untrusted).
 
 An environment belongs to the *workspace*: provisioning leaves a marker in
-<workspace>/.harness/environment.json, so a workspace shared by several sessions is
+<workspace>/.orchestra/environment.json, so a workspace shared by several sessions is
 set up once, and a workspace set up differently is never silently re-provisioned.
 """
 
@@ -32,11 +32,11 @@ from pathlib import Path
 
 import yaml
 
-from harness.sandbox import SandboxRules
-from harness.tools.base import command_env
+from orchestra.sandbox import SandboxRules
+from orchestra.tools.base import command_env
 
 ALLOWED_KEYS = {"description", "files", "setup", "env", "prompt", "sandbox"}
-MARKER = Path(".harness") / "environment.json"
+MARKER = Path(".orchestra") / "environment.json"
 SETUP_TIMEOUT = 600  # seconds per setup command; installs can be slow the first time
 
 

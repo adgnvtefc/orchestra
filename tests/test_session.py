@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from harness.environment import Environment
-from harness.sandbox import SandboxRules
-from harness.session import INTERRUPTED, MESSAGES_FILE, SESSION_FILE, Session, new_session_id
+from orchestra.environment import Environment
+from orchestra.sandbox import SandboxRules
+from orchestra.session import INTERRUPTED, MESSAGES_FILE, SESSION_FILE, Session, new_session_id
 
 
 @pytest.fixture

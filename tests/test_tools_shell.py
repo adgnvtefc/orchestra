@@ -6,12 +6,12 @@ import time
 import uuid
 from pathlib import Path
 
-from harness.tools.base import MAX_OUTPUT_CHARS
-from harness import sandbox
-from harness.sandbox import Seatbelt
-from harness.tools import ToolContext
-from harness.tools.base import ALLOWED_ENV, agent_env
-from harness.tools.builtin.shell import bash
+from orchestra.tools.base import MAX_OUTPUT_CHARS
+from orchestra import sandbox
+from orchestra.sandbox import Seatbelt
+from orchestra.tools import ToolContext
+from orchestra.tools.base import ALLOWED_ENV, agent_env
+from orchestra.tools.builtin.shell import bash
 
 
 class TestExecution:

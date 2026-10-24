@@ -2,10 +2,10 @@
 
 import pytest
 
-from harness.interfaces.cli import terminal_approver
-from harness.policy import Policy, approve_all, deny_all, require_sandbox_for_auto_approval
-from harness.sandbox import Unsandboxed
-from harness.tools import Tool
+from orchestra.interfaces.cli import terminal_approver
+from orchestra.policy import Policy, approve_all, deny_all, require_sandbox_for_auto_approval
+from orchestra.sandbox import Unsandboxed
+from orchestra.tools import Tool
 
 
 def make_tool(name="t", permission="allow") -> Tool:

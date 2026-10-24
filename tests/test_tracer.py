@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.tracer import Tracer
+from orchestra.tracer import Tracer
 
 
 def read_lines(path: Path) -> list[dict]:
@@ -140,7 +140,7 @@ class TestRunLifecycle:
         tracer = Tracer()
         tracer.start("t", {"model": "m", "system_prompt": "p"}, [], "a")
         record = tracer.events[0]["provenance"]
-        assert set(record) == {"agent_version", "harness"}
+        assert set(record) == {"agent_version", "orchestra"}
 
     def test_finish_writes_run_end_immediately(self):
         tracer = Tracer()

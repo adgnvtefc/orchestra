@@ -10,7 +10,7 @@ To add a tool without touching the harness: a tools.py in your project defining 
 Project.at(root, extra_tools=[...]) from Python (see config.py).
 """
 
-from harness.tools.base import Tool, ToolContext
-from harness.tools.toolset import REGISTRY, Toolset, available_tools
+from orchestra.tools.base import Tool, ToolContext
+from orchestra.tools.toolset import REGISTRY, Toolset, available_tools
 
 __all__ = ["REGISTRY", "Tool", "ToolContext", "Toolset", "available_tools"]

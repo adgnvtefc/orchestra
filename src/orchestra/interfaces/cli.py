@@ -4,9 +4,9 @@ Everything that reads from or prints to the terminal lives here. The orchestrato
 neither: this module drives it through new_conversation() / resume_conversation() and
 Conversation.turn(), and hands it terminal_approver as the way to ask a human.
 
-    harness "task"                  one task, as a new one-turn session (same as `harness run "task"`)
-    harness chat                    a conversation, turn by turn
-    harness chat --resume <id>      continue a saved conversation
+    orchestra "task"                  one task, as a new one-turn session (same as `orchestra run "task"`)
+    orchestra chat                    a conversation, turn by turn
+    orchestra chat --resume <id>      continue a saved conversation
 """
 
 import argparse
@@ -15,11 +15,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from harness.config import Project, ProjectToolsError
-from harness.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
-from harness.policy import approve_all, deny_all, require_sandbox_for_auto_approval
-from harness.providers import MissingAPIKey
-from harness.sandbox import Unsandboxed, default_sandbox
+from orchestra.config import Project, ProjectToolsError
+from orchestra.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
+from orchestra.policy import approve_all, deny_all, require_sandbox_for_auto_approval
+from orchestra.providers import MissingAPIKey
+from orchestra.sandbox import Unsandboxed, default_sandbox
 
 
 # this approver is currently only called from within the policy class
@@ -27,7 +27,7 @@ def terminal_approver(name: str, arguments: dict) -> str | None:
     """Ask the human at the terminal. Only an explicit "y" approves.
 
     Everything goes to stderr, prompt included (input()'s own prompt would go to stdout):
-    stdout is only the answer, so `answer=$(harness ...)` still shows you the question.
+    stdout is only the answer, so `answer=$(orchestra ...)` still shows you the question.
     """
     print(f"\n  agent wants to run {name}", file=sys.stderr)
     for key, value in arguments.items():
@@ -106,7 +106,7 @@ def chat(conv: Conversation) -> None:
         if result.run_end:
             print(turn_summary(result.run_end), file=sys.stderr)
         print(f"\n{result.answer}\n")
-    print(f"Session saved. Continue it with: harness chat --resume {session.id}")
+    print(f"Session saved. Continue it with: orchestra chat --resume {session.id}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -114,7 +114,7 @@ def main(argv: list[str] | None = None) -> None:
     tests pass their own list."""
     argv = sys.argv[1:] if argv is None else list(argv)
     if not argv or argv[0] not in ("run", "chat", "-h", "--help"):
-        argv = ["run", *argv]  # plain `harness "task"` keeps working
+        argv = ["run", *argv]  # plain `orchestra "task"` keeps working
 
     # Options for setting up a new session, shared by both commands.
     new_session = argparse.ArgumentParser(add_help=False)
@@ -151,7 +151,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     # this block is ai generated and i am trusting it works
-    parser = argparse.ArgumentParser(prog="harness", description="Run an agent.")
+    parser = argparse.ArgumentParser(prog="orchestra", description="Run an agent.")
     commands = parser.add_subparsers(dest="command", required=True)
     run_cmd = commands.add_parser("run", parents=[new_session], help="run one task as a new session")
     # nargs="+" collects every remaining word, so quotes around the task are optional

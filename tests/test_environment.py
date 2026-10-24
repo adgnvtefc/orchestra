@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from harness import environment as environment_module
-from harness.environment import MARKER, EnvironmentSetupError, load_environment, provision
-from harness.sandbox import SandboxRules
-from harness.tools import ToolContext
-from harness.tools.base import command_env
+from orchestra import environment as environment_module
+from orchestra.environment import MARKER, EnvironmentSetupError, load_environment, provision
+from orchestra.sandbox import SandboxRules
+from orchestra.tools import ToolContext
+from orchestra.tools.base import command_env
 
 
 @pytest.fixture
@@ -229,10 +229,10 @@ class TestCommandEnv:
         assert "OMLX_API_KEY" not in command_env({"X": "1"})
 
     def test_no_variables_is_plain_agent_env(self, workspace):
-        from harness.tools.base import agent_env
+        from orchestra.tools.base import agent_env
         assert command_env({}) == agent_env()
 
     def test_tool_context_uses_the_same_function(self, workspace):
-        from harness.sandbox import Unsandboxed
+        from orchestra.sandbox import Unsandboxed
         context = ToolContext(workspace, sandbox=Unsandboxed(), env={"X": "1"})
         assert context.command_env() == command_env({"X": "1"})

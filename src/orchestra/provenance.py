@@ -31,7 +31,7 @@ def agent_version(config: dict) -> str:
 
 
 @functools.cache
-def harness_version() -> dict:
+def orchestra_version() -> dict:
     """Which harness code is running: its version, how it was installed, and its commit if known.
 
     Cached: measured once per process, at the first run. That's the closest match to
@@ -64,7 +64,7 @@ def find_source_checkout(code_file: Path) -> Path | None:
     """The harness's own source folder, if `code_file` is running from one.
 
     The nearest pyproject.toml above the code decides: in the harness repo it says
-    name = "harness"; installed in another project's .venv, the nearest one is that
+    name = "orchestra"; installed in another project's .venv, the nearest one is that
     project's, so this returns None and git is never asked about the wrong repo.
     """
     for folder in code_file.resolve().parents:
@@ -74,13 +74,13 @@ def find_source_checkout(code_file: Path) -> Path | None:
                 name = tomllib.loads(pyproject.read_text()).get("project", {}).get("name")
             except (OSError, tomllib.TOMLDecodeError):
                 return None
-            return folder if name == "harness" else None
+            return folder if name == "orchestra" else None
     return None
 
 
 def _package_version() -> str | None:
     try:
-        return importlib.metadata.version("harness")
+        return importlib.metadata.version("orchestra")
     except importlib.metadata.PackageNotFoundError:
         return None
 
@@ -88,7 +88,7 @@ def _package_version() -> str | None:
 def _direct_url() -> dict | None:
     """How the harness was installed, as the installer recorded it (direct_url.json), if at all."""
     try:
-        text = importlib.metadata.distribution("harness").read_text("direct_url.json")
+        text = importlib.metadata.distribution("orchestra").read_text("direct_url.json")
     except importlib.metadata.PackageNotFoundError:
         return None
     return json.loads(text) if text else None
@@ -115,7 +115,7 @@ def collect(config: dict) -> dict:
     """Everything recorded about where a run came from. Goes in run_start.provenance."""
     return {
         "agent_version": agent_version(config),
-        "harness": harness_version(),
+        "orchestra": orchestra_version(),
         # The model asked for is config["model"], right next to this in run_start; the model
         # the server says actually answered is in each model_response event.
     }

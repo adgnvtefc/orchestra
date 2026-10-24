@@ -17,8 +17,8 @@ from pathlib import Path
 
 import yaml
 
-from harness.environment import Environment, load_environment
-from harness.tools import Tool, Toolset, available_tools
+from orchestra.environment import Environment, load_environment
+from orchestra.tools import Tool, Toolset, available_tools
 
 
 PROJECT_TOOLS_FILE = "tools.py"
@@ -86,7 +86,7 @@ def load_project_tools(root: Path) -> tuple[Tool, ...]:
     path = root / PROJECT_TOOLS_FILE
     if not path.is_file():
         return ()
-    spec = importlib.util.spec_from_file_location(f"_harness_project_tools_{abs(hash(str(path)))}", path)
+    spec = importlib.util.spec_from_file_location(f"_orchestra_project_tools_{abs(hash(str(path)))}", path)
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
@@ -94,7 +94,7 @@ def load_project_tools(root: Path) -> tuple[Tool, ...]:
         raise ProjectToolsError(f"{path}: couldn't be loaded: {type(e).__name__}: {e}") from e
     tools = getattr(module, "TOOLS", None)
     if not isinstance(tools, (list, tuple)) or not all(isinstance(t, Tool) for t in tools):
-        raise ProjectToolsError(f"{path}: must define TOOLS, a list of harness.tools.Tool")
+        raise ProjectToolsError(f"{path}: must define TOOLS, a list of orchestra.tools.Tool")
     return tuple(tools)
 
 

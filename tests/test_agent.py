@@ -4,11 +4,11 @@ import pytest
 
 import json
 
-from harness.sandbox import Unsandboxed
-from harness.agent import run_agent
-from harness.session import MESSAGES_FILE, Session
-from harness.tools import ToolContext, Toolset
-from harness.tracer import Tracer
+from orchestra.sandbox import Unsandboxed
+from orchestra.agent import run_agent
+from orchestra.session import MESSAGES_FILE, Session
+from orchestra.tools import ToolContext, Toolset
+from orchestra.tracer import Tracer
 from tests.fakes import NO_HUMAN, FakeClient, always, call, reply
 
 CONFIG = {"model": "test-model", "temperature": 0.3, "max_steps": 5, "system_prompt": "You are a test agent."}

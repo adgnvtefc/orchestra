@@ -7,9 +7,9 @@ builtin/ and only depend on base.py.
 import json
 from collections.abc import Mapping, Sequence
 
-from harness.policy import Policy
-from harness.tools.base import Tool, ToolContext
-from harness.tools.builtin import BUILTIN_TOOLS
+from orchestra.policy import Policy
+from orchestra.tools.base import Tool, ToolContext
+from orchestra.tools.builtin import BUILTIN_TOOLS
 
 # The built-in tools, by name. A project adds its own via available_tools(extra_tools), so it
 # never has to edit the harness.

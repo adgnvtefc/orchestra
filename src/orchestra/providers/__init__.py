@@ -7,6 +7,6 @@ That's also when the provider-neutral response format gets designed, from two re
 examples instead of one.
 """
 
-from harness.providers.omlx import MissingAPIKey, call_model, make_client
+from orchestra.providers.omlx import MissingAPIKey, call_model, make_client
 
 __all__ = ["MissingAPIKey", "call_model", "make_client"]

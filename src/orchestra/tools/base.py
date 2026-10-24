@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from harness.policy import Permission
-from harness.sandbox import Seatbelt, Unsandboxed
+from orchestra.policy import Permission
+from orchestra.sandbox import Seatbelt, Unsandboxed
 
 # ~10k chars is roughly 2.5k tokens: enough to be useful, small enough that one
 # tool result can't eat a 32k context window.
@@ -23,7 +23,7 @@ ALLOWED_ENV = ("PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "T
 def agent_env() -> dict[str, str]:
     """The environment for agent commands: the allowlisted variables, minus the harness's own Python.
 
-    The harness runs inside its virtual environment (.venv), which puts .venv/bin first on
+    The orchestra runs inside its virtual environment (.venv), which puts .venv/bin first on
     PATH. Left there, the agent's `python`/`pytest`/`pip` would be the harness's own, and it
     could change the packages the harness itself runs on.
     """

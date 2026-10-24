@@ -4,10 +4,10 @@ import time
 
 from openai import OpenAI
 
-from harness.providers import call_model
-from harness.session import Session
-from harness.tools import Toolset
-from harness.tracer import Tracer
+from orchestra.providers import call_model
+from orchestra.session import Session
+from orchestra.tools import Toolset
+from orchestra.tracer import Tracer
 
 
 # PROVIDER-SPECIFIC: oMLX/Qwen puts thinking in `reasoning_content`; dropping it is a cache

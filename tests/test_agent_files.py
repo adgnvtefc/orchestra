@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from harness.sandbox import Unsandboxed
-from harness.config import load_agent_config
+from orchestra.sandbox import Unsandboxed
+from orchestra.config import load_agent_config
 
 AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"  # this repo's own agents
-from harness.tools import ToolContext, Toolset
+from orchestra.tools import ToolContext, Toolset
 from tests.fakes import NO_HUMAN
 
 AGENT_FILES = sorted(AGENTS_DIR.glob("*.md"))

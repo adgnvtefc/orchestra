@@ -25,8 +25,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from harness.environment import Environment, fill_workspace
-from harness.sandbox import SandboxRules
+from orchestra.environment import Environment, fill_workspace
+from orchestra.sandbox import SandboxRules
 
 SESSION_FILE = "session.json"
 MESSAGES_FILE = "messages.jsonl"

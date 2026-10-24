@@ -1,5 +1,5 @@
 [project]
-name = "harness"
+name = "orchestra"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-harness = "harness.interfaces.cli:main"
+orchestra = "orchestra.interfaces.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]

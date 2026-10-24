@@ -7,8 +7,8 @@ import os
 
 import pytest
 
-from harness.tools.base import MAX_OUTPUT_CHARS
-from harness.tools.builtin.fs import _resolve, read_file, write_file
+from orchestra.tools.base import MAX_OUTPUT_CHARS
+from orchestra.tools.builtin.fs import _resolve, read_file, write_file
 
 # Paths a model might send, that must never reach outside the workspace.
 ESCAPES = [
