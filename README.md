@@ -307,7 +307,7 @@ uv run pytest -m live         # also run real tasks against the model server
 ```
 
 ## Changelog
-
+- 10/25: added a lot of tracking updates. roll back if bad.
 - 10/22: added functionality to import harness as library to external projects. NOTE: functionality as library has not been explicitly human tested yet. NOTE 2: TO NUKE CHANGES ROLLBACK TO LAST NON LIBRARY RELATED COMMIT.
 - 10/21: added sessions, traces, chats, refactors for scalability
 - 10/7: small refactor for scalable design in tools. added tests (fully ai generated, trusting that they work)
