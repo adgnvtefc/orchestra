@@ -6,8 +6,8 @@ import re
 import pytest
 
 from orchestra.sandbox import Unsandboxed
-from orchestra.policy import Policy
-from orchestra.tools import REGISTRY, Tool, ToolContext, Toolset, available_tools
+from orchestra.policy import Policy, approve_all, asks_human, deny_all
+from orchestra.tools import REGISTRY, Tool, ToolContext, ToolRun, Toolset, available_tools
 from tests.fakes import NO_HUMAN
 
 
@@ -111,22 +111,22 @@ class TestSchemas:
 
 class TestExecute:
     def test_calls_tool_with_keyword_args(self, ctx, fake_tools):
-        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "hi", "suffix": "!"}') == "hi!"
+        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "hi", "suffix": "!"}').result == "hi!"
 
     def test_optional_argument_uses_default(self, ctx, fake_tools):
-        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "hi"}') == "hi"
+        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "hi"}').result == "hi"
 
     def test_result_is_stringified(self, ctx, fake_tools):
-        assert Toolset(["count"], NO_HUMAN, ctx).execute("count", "{}") == "42"
+        assert Toolset(["count"], NO_HUMAN, ctx).execute("count", "{}").result == "42"
 
     @pytest.mark.parametrize("arguments", ["", None])
     def test_empty_arguments_mean_no_arguments(self, ctx, fake_tools, arguments):
-        assert Toolset(["count"], NO_HUMAN, ctx).execute("count", arguments) == "42"
+        assert Toolset(["count"], NO_HUMAN, ctx).execute("count", arguments).result == "42"
 
     def test_real_tool_end_to_end(self, ctx, workspace):
         toolset = Toolset(["read_file", "write_file"], NO_HUMAN, ctx)
-        assert toolset.execute("write_file", '{"path": "a.txt", "content": "hi"}') == "Wrote 2 characters to a.txt."
-        assert toolset.execute("read_file", '{"path": "a.txt"}') == "hi"
+        assert toolset.execute("write_file", '{"path": "a.txt", "content": "hi"}').result == "Wrote 2 characters to a.txt."
+        assert toolset.execute("read_file", '{"path": "a.txt"}').result == "hi"
 
 
 class TestContext:
@@ -135,15 +135,15 @@ class TestContext:
     def test_each_toolset_works_in_its_own_workspace(self, tmp_path):
         a, b = tmp_path / "a", tmp_path / "b"
         a.mkdir(), b.mkdir()
-        Toolset(["write_file"], NO_HUMAN, ToolContext(a, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "A"}')
-        Toolset(["write_file"], NO_HUMAN, ToolContext(b, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "B"}')
+        Toolset(["write_file"], NO_HUMAN, ToolContext(a, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "A"}').result
+        Toolset(["write_file"], NO_HUMAN, ToolContext(b, sandbox=Unsandboxed())).execute("write_file", '{"path": "f.txt", "content": "B"}').result
         assert (a / "f.txt").read_text() == "A"
         assert (b / "f.txt").read_text() == "B"
 
     @pytest.mark.parametrize("arguments", ['{"ctx": "/", "path": "x"}', '{"workspace": "/", "path": "x"}'])
     def test_model_cannot_supply_the_context(self, ctx, arguments):
         # ctx is passed positionally first; a model-sent "ctx" collides and is refused.
-        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("read_file", arguments)
+        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("read_file", arguments).result
         assert result.startswith("Error: bad arguments for read_file")
 
 
@@ -151,24 +151,24 @@ class TestExecuteRefusesToolsNotGiven:
     """The security property: the registry has a tool, but this agent wasn't given it."""
 
     def test_registered_but_not_given(self, ctx, workspace):
-        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("write_file", '{"path": "x.txt", "content": "pwned"}')
+        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("write_file", '{"path": "x.txt", "content": "pwned"}').result
         assert result == "Error: unknown tool 'write_file'. Available tools: read_file."
         assert not (workspace / "x.txt").exists()
 
     def test_bash_not_given_never_prompts(self, ctx, answer_prompt, workspace):
         prompts = answer_prompt("y")
-        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("bash", '{"command": "touch pwned"}')
+        result = Toolset(["read_file"], NO_HUMAN, ctx).execute("bash", '{"command": "touch pwned"}').result
         assert result.startswith("Error: unknown tool 'bash'")
         assert prompts == []  # refused before it ever got to ask
         assert not (workspace / "pwned").exists()
 
     def test_empty_toolset_runs_nothing(self, ctx):
-        assert Toolset([], NO_HUMAN, ctx).execute("read_file", '{"path": "a"}') == (
+        assert Toolset([], NO_HUMAN, ctx).execute("read_file", '{"path": "a"}').result == (
             "Error: unknown tool 'read_file'. Available tools: (none)."
         )
 
     def test_invented_tool(self, ctx):
-        assert Toolset(["read_file"], NO_HUMAN, ctx).execute("delete_everything", "{}").startswith("Error: unknown tool")
+        assert Toolset(["read_file"], NO_HUMAN, ctx).execute("delete_everything", "{}").result.startswith("Error: unknown tool")
 
 
 class TestExecuteEnforcesPolicy:
@@ -188,43 +188,44 @@ class TestExecuteEnforcesPolicy:
 
     def test_approved_call_runs(self, ctx, fake_tools):
         policy = self.policy(True)
-        assert Toolset(["guarded"], policy, ctx).execute("guarded", '{"target": "x"}') == "did x"
+        assert Toolset(["guarded"], policy, ctx).execute("guarded", '{"target": "x"}').result == "did x"
         assert fake_tools["guarded"].fn.calls == ["x"]
 
     def test_declined_call_does_not_run(self, ctx, fake_tools):
-        result = Toolset(["guarded"], self.policy(False), ctx).execute("guarded", '{"target": "x"}')
+        result = Toolset(["guarded"], self.policy(False), ctx).execute("guarded", '{"target": "x"}').result
         assert result == "test declined guarded"
         assert fake_tools["guarded"].fn.calls == []  # the tool's function was never called
 
     def test_approver_sees_parsed_arguments(self, ctx, fake_tools):
         policy = self.policy(True)
-        Toolset(["guarded"], policy, ctx).execute("guarded", '{"target": "x"}')
+        Toolset(["guarded"], policy, ctx).execute("guarded", '{"target": "x"}').result
         assert policy.asked == [("guarded", {"target": "x"})]
+
 
     def test_allow_tools_never_ask(self, ctx, fake_tools):
         policy = self.policy(False)
-        assert Toolset(["echo"], policy, ctx).execute("echo", '{"text": "hi"}') == "hi"
+        assert Toolset(["echo"], policy, ctx).execute("echo", '{"text": "hi"}').result == "hi"
         assert policy.asked == []
 
     @pytest.mark.parametrize("arguments", ["{bad json", "[1]"])
     def test_malformed_calls_are_rejected_before_asking(self, ctx, fake_tools, arguments):
         # Never bother the human about a call that couldn't run anyway.
         policy = self.policy(True)
-        assert Toolset(["guarded"], policy, ctx).execute("guarded", arguments).startswith("Error:")
+        assert Toolset(["guarded"], policy, ctx).execute("guarded", arguments).result.startswith("Error:")
         assert policy.asked == []
 
     def test_unknown_tool_is_rejected_before_asking(self, ctx, fake_tools):
         policy = self.policy(True)
-        Toolset(["echo"], policy, ctx).execute("guarded", '{"target": "x"}')
+        Toolset(["echo"], policy, ctx).execute("guarded", '{"target": "x"}').result
         assert policy.asked == []
 
     def test_real_bash_respects_policy(self, ctx, workspace):
-        result = Toolset(["bash"], self.policy(False), ctx).execute("bash", '{"command": "touch pwned"}')
+        result = Toolset(["bash"], self.policy(False), ctx).execute("bash", '{"command": "touch pwned"}').result
         assert result == "test declined bash"
         assert not (workspace / "pwned").exists()
 
     def test_real_bash_runs_when_approved(self, ctx, workspace):
-        result = Toolset(["bash"], self.policy(True), ctx).execute("bash", '{"command": "touch made"}')
+        result = Toolset(["bash"], self.policy(True), ctx).execute("bash", '{"command": "touch made"}').result
         assert result.endswith("(exit code 0)")
         assert (workspace / "made").exists()
 
@@ -233,31 +234,31 @@ class TestExecuteReturnsErrorsInsteadOfRaising:
     """execute() must never raise: every failure becomes text the model can read and react to."""
 
     def test_invalid_json(self, ctx, fake_tools):
-        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", "{text: hi}")
+        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", "{text: hi}").result
         assert result.startswith("Error: tool arguments were not valid JSON")
         assert '{"path": "notes.txt"}' in result  # shows the model what valid looks like
 
     @pytest.mark.parametrize(("arguments", "kind"), [("[1, 2]", "list"), ('"hi"', "str"), ("3", "int"), ("null", "NoneType")])
     def test_json_that_is_not_an_object(self, ctx, fake_tools, arguments, kind):
-        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", arguments) == f"Error: tool arguments must be a JSON object, got {kind}."
+        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", arguments).result == f"Error: tool arguments must be a JSON object, got {kind}."
 
     def test_missing_required_argument(self, ctx, fake_tools):
-        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", "{}")
+        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", "{}").result
         assert result.startswith("Error: bad arguments for echo:")
         assert "text" in result
 
     def test_unexpected_argument(self, ctx, fake_tools):
-        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "a", "colour": "red"}')
+        result = Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "a", "colour": "red"}').result
         assert result.startswith("Error: bad arguments for echo:")
         assert "colour" in result
 
     def test_tool_exception(self, ctx, fake_tools):
-        assert Toolset(["boom"], NO_HUMAN, ctx).execute("boom", "{}") == "Error: RuntimeError: kaboom"
+        assert Toolset(["boom"], NO_HUMAN, ctx).execute("boom", "{}").result == "Error: RuntimeError: kaboom"
 
     def test_real_tool_exceptions_are_named(self, ctx):
         toolset = Toolset(["read_file"], NO_HUMAN, ctx)
-        assert toolset.execute("read_file", '{"path": "nope.txt"}').startswith("Error: FileNotFoundError:")
-        assert toolset.execute("read_file", '{"path": "../x"}').startswith("Error: PermissionError:")
+        assert toolset.execute("read_file", '{"path": "nope.txt"}').result.startswith("Error: FileNotFoundError:")
+        assert toolset.execute("read_file", '{"path": "../x"}').result.startswith("Error: PermissionError:")
 
     @pytest.mark.parametrize(
         ("name", "arguments"),
@@ -274,7 +275,7 @@ class TestExecuteReturnsErrorsInsteadOfRaising:
         ],
     )
     def test_never_raises_on_garbage(self, ctx, fake_tools, name, arguments):
-        result = Toolset(["echo", "boom", "read_file"], NO_HUMAN, ctx).execute(name, arguments)
+        result = Toolset(["echo", "boom", "read_file"], NO_HUMAN, ctx).execute(name, arguments).result
         assert isinstance(result, str) and result.startswith("Error:")
 
 
@@ -291,11 +292,11 @@ class TestExtraTools:
     def test_available_alongside_builtins(self, ctx):
         toolset = Toolset(["read_file", "weather"], NO_HUMAN, ctx, available_tools([_tool("weather")]))
         assert [s["function"]["name"] for s in toolset.schemas()] == ["read_file", "weather"]
-        assert toolset.execute("weather", "{}") == "custom result"
+        assert toolset.execute("weather", "{}").result == "custom result"
 
     def test_only_listed_ones_are_given(self, ctx):
         toolset = Toolset(["read_file"], NO_HUMAN, ctx, available_tools([_tool("weather")]))
-        assert toolset.execute("weather", "{}").startswith("Error: unknown tool")
+        assert toolset.execute("weather", "{}").result.startswith("Error: unknown tool")
 
     def test_name_collision_is_an_error(self):
         with pytest.raises(ValueError, match="'bash' is already taken"):
@@ -313,3 +314,27 @@ class TestExtraTools:
     def test_builtins_registry_is_untouched(self):
         available_tools([_tool("weather")])
         assert "weather" not in REGISTRY
+
+
+class TestApproval:
+    """Each run reports who decided whether it ran (policy.Approval), or None if nobody was asked."""
+
+    @pytest.mark.parametrize(("approver", "approval"), [(approve_all, "auto-allow"), (deny_all, "auto-deny")])
+    def test_ask_tools_report_the_policys_decision(self, ctx, fake_tools, approver, approval):
+        assert Toolset(["guarded"], Policy(approver), ctx).execute("guarded", '{"target": "x"}').approval == approval
+
+    def test_a_person_deciding(self, ctx, fake_tools):
+        person = asks_human(lambda name, arguments: None)
+        assert Toolset(["guarded"], Policy(person), ctx).execute("guarded", '{"target": "x"}').approval == "human-allow"
+
+    def test_allow_tools_are_auto_allowed(self, ctx, fake_tools):
+        assert Toolset(["echo"], NO_HUMAN, ctx).execute("echo", '{"text": "hi"}') == ToolRun("hi", "auto-allow")
+
+    def test_a_failing_tool_was_still_approved(self, ctx, fake_tools):
+        # it ran (and failed): approval and outcome are different facts
+        run = Toolset(["boom"], NO_HUMAN, ctx).execute("boom", "{}")
+        assert (run.approval, run.result) == ("auto-allow", "Error: RuntimeError: kaboom")
+
+    @pytest.mark.parametrize(("name", "arguments"), [("ghost", "{}"), ("echo", "{bad json"), ("echo", "[1]")])
+    def test_calls_rejected_before_the_policy_have_no_approval(self, ctx, fake_tools, name, arguments):
+        assert Toolset(["echo"], NO_HUMAN, ctx).execute(name, arguments).approval is None

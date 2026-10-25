@@ -5,9 +5,16 @@ import pytest
 from orchestra import config, orchestrator
 from orchestra.interfaces import cli
 from orchestra.config import Project
-from orchestra.policy import approve_all, deny_all
+from orchestra.policy import Decision, NobodyToAsk, Policy, approve_all, deny_all
+from orchestra.tools import REGISTRY
 from orchestra.sandbox import Unsandboxed, default_sandbox
 from tests.fakes import FakeClient, reply
+
+
+@pytest.fixture
+def sessions_dir(orchestra_dir):
+    """The CLI's sessions: it works for the app "orchestra-cli", so ~/.orchestra/orchestra-cli/sessions/."""
+    return orchestra_dir / "orchestra-cli" / "sessions"
 
 
 @pytest.fixture
@@ -34,10 +41,17 @@ class TestTerminalApprover:
             "The user declined this bash call. Try a different approach or ask the user."
         )
 
-    def test_no_terminal_declines(self, answer_prompt):
-        # No terminal is the same situation as unattended, so it gets the same message.
+    def test_no_terminal_means_nobody_to_ask(self, answer_prompt):
+        # No terminal is the same situation as unattended: the policy refuses as deny_all
+        # would, and records it as auto-deny, not as a person's answer (test_policy.py).
         answer_prompt(EOFError)
-        assert cli.terminal_approver("bash", {"command": "ls"}) == deny_all("bash", {"command": "ls"})
+        with pytest.raises(NobodyToAsk):
+            cli.terminal_approver("bash", {"command": "ls"})
+
+    def test_no_terminal_through_the_policy(self, answer_prompt):
+        answer_prompt(EOFError)
+        decision = Policy(cli.terminal_approver).check(REGISTRY["bash"], {"command": "ls"})
+        assert decision == Decision("auto-deny", deny_all("bash", {"command": "ls"}))
 
     def test_shows_tool_and_arguments_before_asking(self, approve, capsys):
         cli.terminal_approver("bash", {"command": "echo visible-command", "timeout": 60})
@@ -58,7 +72,7 @@ class TestTerminalApprover:
 
 class TestTurnSummary:
     def end(self, steps=3, tool_calls=2, prompt=1904, cached=0, seconds=4.21):
-        return {"event": "run_end", "steps": steps, "tool_calls": tool_calls,
+        return {"event": "turn_end", "steps": steps, "tool_calls": tool_calls,
                 "tokens": {"prompt": prompt, "completion": 50, "cached": cached}, "seconds": seconds}
 
     def test_format(self):
@@ -73,7 +87,7 @@ class TestTurnSummary:
 
 class TestShowStep:
     def tool_call(self, result="hello", **overrides):
-        return {"event": "tool_call", "step": 2, "name": "echo", "arguments": '{"text": "hi"}', "result": result, **overrides}
+        return {"event": "tool_run", "step": 2, "name": "echo", "arguments": '{"text": "hi"}', "result": result, **overrides}
 
     def test_prints_the_call_and_its_result(self, capsys):
         cli.show_step(self.tool_call())
@@ -86,7 +100,7 @@ class TestShowStep:
         result_line = capsys.readouterr().err.splitlines()[1]
         assert result_line == "  -> " + "z" * 200 + "..."
 
-    @pytest.mark.parametrize("kind", ["run_start", "model_response", "run_end"])
+    @pytest.mark.parametrize("kind", ["turn_start", "model_call", "turn_end"])
     def test_other_events_print_nothing(self, capsys, kind):
         cli.show_step({"event": kind})
         assert capsys.readouterr().out == ""
@@ -95,7 +109,7 @@ class TestShowStep:
 class FakeConversation:
     def __init__(self, calls, **kwargs):
         self.calls, self.kwargs = calls, kwargs
-        self.session = type("S", (), {"id": "fake-session", "trace_path": lambda self, n: __import__("pathlib").Path(f"turn-{n:03d}.jsonl")})()
+        self.session = type("S", (), {"id": "fake-session", "trace_path": __import__("pathlib").Path("trace.jsonl")})()
 
     def turn(self, task, on_event=None):
         self.calls.append({"task": task, **self.kwargs})
@@ -118,7 +132,7 @@ class TestMain:
     def test_joins_words_into_one_task(self, run_calls, agents_dir, capsys):
         cli.main(["list", "the", "files"])
         assert run_calls == [
-            {"task": "list the files", "agent_name": "base", "project": Project(agents_dir.parent.resolve()),
+            {"task": "list the files", "agent_name": "base", "app": "orchestra-cli", "project": Project(agents_dir.parent.resolve()),
              "approver": cli.terminal_approver, "sandbox": default_sandbox(), "workspace": None, "environment": None}
         ]
         assert capsys.readouterr().out.strip() == "printed answer"
@@ -292,7 +306,7 @@ class TestRunOutput:
         captured = capsys.readouterr()
         assert captured.out.strip() == "the answer"
         (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
-        assert f"session: {session.name}  trace: turn-001.jsonl" in captured.err
+        assert f"session: {session.name}  trace: trace.jsonl" in captured.err
         assert "(1 model call · 0 tool calls ·" in captured.err
 
     def test_session_printed_even_after_a_crash(self, agents_dir, sessions_dir, monkeypatch, capsys):
@@ -341,11 +355,11 @@ class TestProjectTools:
         cli.main(["--config-root", str(project), "weather in Paris?"])
         assert client.requests[1]["messages"][-1]["content"] == "sunny in Paris"
 
-    def test_resume_finds_them(self, project, monkeypatch, typed):
+    def test_resume_finds_them(self, project, monkeypatch, typed, sessions_dir):
         client = self.weather_then_answer(monkeypatch)
         typed("weather in Paris?")
         cli.main(["chat"])
-        (session_dir,) = list(orchestrator.SESSIONS_DIR.iterdir())
+        (session_dir,) = list(sessions_dir.iterdir())
         session_id = session_dir.name
         monkeypatch.chdir(project.parent)  # resume from somewhere else: the session knows its project
         from tests.fakes import call

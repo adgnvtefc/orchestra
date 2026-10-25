@@ -2,7 +2,7 @@
 
 import pytest
 
-from orchestra import orchestrator
+from orchestra import orchestrator, records
 from orchestra.sandbox import Unsandboxed
 from orchestra.tools import REGISTRY, Tool, ToolContext
 
@@ -28,12 +28,18 @@ def ctx(workspace):
 
 
 @pytest.fixture(autouse=True)
-def sessions_dir(tmp_path, monkeypatch):
-    """Put every session (and its traces) in a temp directory, for every test (autouse):
-    tests never fill the real sessions/."""
-    directory = tmp_path / "sessions"
-    monkeypatch.setattr(orchestrator, "SESSIONS_DIR", directory)
+def orchestra_dir(tmp_path, monkeypatch):
+    """A temp ~/.orchestra for every test (autouse): records and sessions never touch the real one."""
+    directory = tmp_path / "orchestra"
+    monkeypatch.setattr(records, "ORCHESTRA_DIR", directory)
     return directory
+
+
+@pytest.fixture
+def sessions_dir(orchestra_dir):
+    """Where tests' sessions go: the test app's, ~/.orchestra/orchestra-test/sessions/.
+    (CLI tests override this with the CLI's app, "orchestra-cli".)"""
+    return orchestra_dir / "orchestra-test" / "sessions"
 
 
 @pytest.fixture(autouse=True)

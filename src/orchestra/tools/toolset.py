@@ -6,8 +6,9 @@ builtin/ and only depend on base.py.
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
-from orchestra.policy import Policy
+from orchestra.policy import Approval, Policy
 from orchestra.tools.base import Tool, ToolContext
 from orchestra.tools.builtin import BUILTIN_TOOLS
 
@@ -25,6 +26,16 @@ def available_tools(extra_tools: Sequence[Tool] = ()) -> dict[str, Tool]:
             raise ValueError(f"tool name {tool.name!r} is already taken; extra tools need their own names")
         available[tool.name] = tool
     return available
+
+
+@dataclass(frozen=True)
+class ToolRun:
+    """What executing one tool call produced."""
+
+    result: str  # what the model gets back: the tool's output, or an error or refusal message
+    # Who decided whether it ran (policy.Approval). None: it never got that far (unknown
+    # tool, or arguments that weren't a JSON object), so nobody was asked.
+    approval: Approval | None
 
 
 class Toolset:
@@ -60,8 +71,9 @@ class Toolset:
         return [t.schema for t in self.tools.values()]
 
     # executes a tool
-    def execute(self, name: str, arguments_json: str) -> str:
-        """Parse the model's JSON arguments, call the matching tool, return its result as a string.
+    def execute(self, name: str, arguments_json: str) -> ToolRun:
+        """Parse the model's JSON arguments, call the matching tool, return its result as a string,
+        and who approved it.
 
         This must never raise. Unknown tool, invalid JSON, wrong argument names, and
         exceptions from the tool itself all become an error string that goes back to
@@ -72,27 +84,30 @@ class Toolset:
         # Lookup is in THIS toolset, not REGISTRY: a tool this agent wasn't given can't run.
         tool = self.tools.get(name)
         if tool is None:
-            return f"Error: unknown tool {name!r}. Available tools: {', '.join(self.tools) or '(none)'}."
+            return ToolRun(f"Error: unknown tool {name!r}. Available tools: {', '.join(self.tools) or '(none)'}.", None)
 
         try:
             # Some servers send "" instead of "{}" for a call with no arguments.
             arguments = json.loads(arguments_json or "{}")
         except json.JSONDecodeError as e:
-            return f"Error: tool arguments were not valid JSON ({e}). Send a JSON object like {{\"path\": \"notes.txt\"}}."
+            return ToolRun(f"Error: tool arguments were not valid JSON ({e}). Send a JSON object like {{\"path\": \"notes.txt\"}}.", None)
         if not isinstance(arguments, dict):
-            return f"Error: tool arguments must be a JSON object, got {type(arguments).__name__}."
+            return ToolRun(f"Error: tool arguments must be a JSON object, got {type(arguments).__name__}.", None)
 
         # The one enforcement point: every call passes here, after parsing (so a human
         # approving it sees the real arguments) and before the tool runs.
-        refusal = self.policy.check(tool, arguments)
-        if refusal:
-            return refusal
+        decision = self.policy.check(tool, arguments)
+        if decision.refusal:
+            return ToolRun(decision.refusal, decision.approval)
+        return ToolRun(self._call(tool, arguments), decision.approval)
 
+    def _call(self, tool, arguments: dict) -> str:
+        """Run an approved call. A tool's own failure becomes an error string, never an exception."""
         try:
             # ** unpacks the dict as keyword args: {"path": "a.txt"} -> fn(path="a.txt")
             # the context goes first, positionally: the model's arguments can't replace it
             return str(tool.fn(self.context, **arguments))
         except TypeError as e:  # missing / unexpected argument names
-            return f"Error: bad arguments for {name}: {e}"
+            return f"Error: bad arguments for {tool.name}: {e}"
         except Exception as e:  # anything the tool itself raised (PermissionError, FileNotFoundError, ...)
             return f"Error: {type(e).__name__}: {e}"

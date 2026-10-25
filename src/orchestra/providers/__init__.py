@@ -1,12 +1,12 @@
 """Providers: how the harness reaches a model server.
 
-    omlx.py     the local oMLX server (OpenAI-compatible): make_client(), call_model()
+    omlx.py     the local oMLX server (OpenAI-compatible): make_client(), send()
 
-To add one (e.g. Anthropic's native API): a module here with the same two functions.
-That's also when the provider-neutral response format gets designed, from two real
-examples instead of one.
+To add one (e.g. Anthropic's native API): a module here with the same two functions,
+send() returning the same plain dict. (That dict was designed from one example, oMLX;
+expect it to change when a second provider gives a real comparison.)
 """
 
-from orchestra.providers.omlx import MissingAPIKey, call_model, make_client
+from orchestra.providers.omlx import MissingAPIKey, make_client, send
 
-__all__ = ["MissingAPIKey", "call_model", "make_client"]
+__all__ = ["MissingAPIKey", "make_client", "send"]

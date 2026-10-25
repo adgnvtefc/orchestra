@@ -1,19 +1,17 @@
 """oMLX: a local MLX model server that speaks the OpenAI chat-completions API.
 
-Everything that knows how to reach and talk to the model server lives here: building
-the client (URL, API key, timeout) and making one call. The rest of the harness only
-calls these two functions.
+Everything that knows how to talk to the model server lives here: building the client
+(URL, API key, timeout), sending one request, and reading the response (including
+oMLX's extra `reasoning_content`). The rest of orchestra calls these two functions and
+gets plain dicts back, never the openai SDK's types. Recording the call is calls.chat()'s job.
 
-(Responses are still the openai SDK's ChatCompletion, which agent.py and tracer.py read
-directly, including oMLX's extra `reasoning_content`. A provider-neutral response shape
-belongs here too, but it's designed when a second provider exists to compare against.)
+(A second provider, e.g. Anthropic's native API, would be a module here with the same two
+functions returning the same dict.)
 """
 
 import os
-from collections.abc import Sequence
 
 from openai import OpenAI
-from openai.types.chat import ChatCompletion
 
 
 class MissingAPIKey(Exception):
@@ -38,11 +36,15 @@ def make_client() -> OpenAI:
     )
 
 
-def call_model(client: OpenAI, messages: Sequence[dict], model: str, temperature: float, tools: list[dict]) -> ChatCompletion:
-    """Send `messages` + `tools` (schemas) to `model`. Return the whole response.
+def send(client: OpenAI, request: dict) -> dict:
+    """Send one chat request; return the answer as a plain dict:
 
-    The whole response, not just the message: `usage` (token counts, cache hits, and
-    oMLX's timing extras) and `finish_reason` live outside the message, and the trace wants them.
+        content, reasoning, tool_calls ([{"id", "type", "function": {"name", "arguments"}}], or []),
+        finish_reason, model (what the server says answered),
+        usage ({"prompt", "completion", "cached"} tokens), server_usage (the server's own block)
+
+    `request` is sent exactly as given: {"model", "messages", and any of "temperature",
+    "max_tokens", "tools"}.
     """
     # This becomes: POST {base_url}/chat/completions with a JSON body like
     #   {
@@ -58,15 +60,7 @@ def call_model(client: OpenAI, messages: Sequence[dict], model: str, temperature
     #     ],
     #     "temperature": 0.6                      randomness; lower = more consistent tool calls
     #   }
-    kwargs = {
-        "model": model,
-        "messages": list(messages),  # a session hands us a read-only tuple; the request wants a list
-        "temperature": temperature,
-    }
-    # Some servers reject an empty "tools" list, so only send it when the agent has tools.
-    if tools:
-        kwargs["tools"] = tools
-    response = client.chat.completions.create(**kwargs)
+    response = client.chat.completions.create(**request)
 
     # The response JSON looks like
     #   {
@@ -78,6 +72,7 @@ def call_model(client: OpenAI, messages: Sequence[dict], model: str, temperature
     #         "message": {
     #           "role": "assistant",
     #           "content": "text answer" or None,
+    #           "reasoning_content": "...",       oMLX/Qwen's thinking, split out of the content
     #           "tool_calls": [                   present only when the model wants tools run
     #             {"id": "call_1", "type": "function",
     #              "function": {"name": "bash", "arguments": "{\"command\": \"ls\"}"}},   arguments is a JSON STRING
@@ -85,7 +80,26 @@ def call_model(client: OpenAI, messages: Sequence[dict], model: str, temperature
     #         },
     #       }
     #     ],
-    #     "usage": {"prompt_tokens": ..., "completion_tokens": ...},
+    #     "usage": {"prompt_tokens": ..., "completion_tokens": ..., "prompt_tokens_details": {"cached_tokens": ...}},
     #   }
     # The SDK parses this into Python objects, so fields are attributes: response.choices[0].message.content
-    return response
+    choice = response.choices[0]
+    message = choice.message
+    usage = {"prompt": 0, "completion": 0, "cached": 0}
+    if response.usage:
+        details = response.usage.prompt_tokens_details
+        usage = {
+            "prompt": response.usage.prompt_tokens or 0,
+            "completion": response.usage.completion_tokens or 0,
+            "cached": (details.cached_tokens or 0) if details else 0,
+        }
+    return {
+        "content": message.content,
+        "reasoning": getattr(message, "reasoning_content", None),
+        "tool_calls": [call.model_dump() for call in message.tool_calls or []],
+        "finish_reason": choice.finish_reason,
+        "model": response.model,
+        "usage": usage,
+        # oMLX's own usage block adds timings (tokens per second, time to first token)
+        "server_usage": response.usage.model_dump() if response.usage else None,
+    }

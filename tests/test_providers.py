@@ -1,9 +1,10 @@
-"""providers/: reaching the model server. make_client() builds the client, call_model() makes one call."""
+"""providers/: reaching the model server. make_client() builds the client; send() makes one call
+and translates the answer into plain dicts (calls.chat() records it)."""
 
 import pytest
 
-from orchestra.providers import MissingAPIKey, call_model, omlx
-from tests.fakes import FakeClient, reply
+from orchestra.providers import MissingAPIKey, omlx
+from tests.fakes import FakeClient, call, reply
 
 
 @pytest.fixture
@@ -49,17 +50,39 @@ class TestMakeClient:
         assert omlx.make_client().timeout == 600
 
 
-class TestCallModel:
-    def test_returns_the_whole_response(self):
-        # The whole response, so usage and finish_reason reach the trace.
-        client = FakeClient([reply("hi", usage={"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4})])
-        response = call_model(client, [{"role": "user", "content": "x"}], "m", 0.5, [])
-        assert response.choices[0].message.content == "hi"
-        assert response.choices[0].finish_reason == "stop"
-        assert response.usage.prompt_tokens == 3
-        assert client.requests == [{"model": "m", "messages": [{"role": "user", "content": "x"}], "temperature": 0.5}]
+class TestSend:
+    REQUEST = {"model": "m", "messages": [{"role": "user", "content": "x"}], "temperature": 0.5}
 
-    def test_includes_tools_when_given(self):
+    def test_sends_the_request_exactly_as_given(self):
         client = FakeClient([reply("hi")])
-        call_model(client, [], "m", 0.5, [{"type": "function"}])
-        assert client.requests[0]["tools"] == [{"type": "function"}]
+        omlx.send(client, self.REQUEST)
+        assert client.requests == [self.REQUEST]
+
+    def test_answer_as_a_plain_dict(self):
+        usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25, "prompt_tokens_details": {"cached_tokens": 12}}
+        answer = omlx.send(FakeClient([reply("42", reasoning="6*7", usage=usage)]), self.REQUEST)
+        assert answer == {
+            "content": "42", "reasoning": "6*7", "tool_calls": [], "finish_reason": "stop", "model": "fake-model",
+            "usage": {"prompt": 20, "completion": 5, "cached": 12},
+            "server_usage": answer["server_usage"],
+        }
+        assert answer["server_usage"]["total_tokens"] == 25  # the server's own block, kept whole
+
+    def test_tool_calls_are_plain_dicts(self):
+        wanted = call("bash", {"command": "ls"}, id="call_1")
+        answer = omlx.send(FakeClient([reply(tool_calls=[wanted])]), self.REQUEST)
+        assert (answer["tool_calls"], answer["finish_reason"]) == ([wanted], "tool_calls")
+
+    def test_no_usage_or_reasoning_reported(self):
+        answer = omlx.send(FakeClient([reply("hi")]), self.REQUEST)
+        assert (answer["usage"], answer["server_usage"], answer["reasoning"]) == (
+            {"prompt": 0, "completion": 0, "cached": 0}, None, None)
+
+    def test_usage_without_cache_details(self):
+        usage = {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+        assert omlx.send(FakeClient([reply("hi", usage=usage)]), self.REQUEST)["usage"] == {"prompt": 3, "completion": 1, "cached": 0}
+
+    def test_server_errors_are_raised(self):
+        with pytest.raises(ConnectionError):
+            omlx.send(FakeClient([ConnectionError("gone")]), self.REQUEST)
+

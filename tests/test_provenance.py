@@ -1,4 +1,4 @@
-"""Provenance: agent version hashes, harness git state, and what collect() records."""
+"""Provenance: agent version hashes, and which orchestra code is running."""
 
 import re
 import subprocess
@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from orchestra import provenance
-from orchestra.provenance import agent_version, collect, describe_install, find_source_checkout, git_state
+from orchestra.provenance import agent_version, describe_install, find_source_checkout, git_state
 
 CONFIG = {"name": "base", "model": "m", "temperature": 0.6, "max_steps": 20, "tools": ["bash"], "system_prompt": "Hi."}
 
@@ -99,28 +99,24 @@ class TestGitState:
         assert git_state(repo) == {"commit": None, "dirty": None}
 
 
-class TestCollect:
+class TestOrchestraVersion:
     def test_fields(self):
-        record = collect(CONFIG)
-        assert set(record) == {"agent_version", "orchestra"}
-        assert record["agent_version"] == agent_version(CONFIG)
-        assert {"version", "installed", "commit", "dirty"} <= set(record["orchestra"])
+        assert {"version", "installed", "commit", "dirty"} <= set(provenance.orchestra_version())
 
-    def test_orchestra_version_is_measured_once_per_process(self, monkeypatch):
+    def test_measured_once_per_process(self, monkeypatch):
         provenance.orchestra_version.cache_clear()
         calls = []
         monkeypatch.setattr(provenance, "git_state", lambda repo: calls.append(repo) or {"commit": "c", "dirty": False})
-        collect(CONFIG)
-        collect(CONFIG)
+        provenance.orchestra_version()
+        provenance.orchestra_version()
         assert len(calls) == 1
         provenance.orchestra_version.cache_clear()  # don't leak the fake value into other tests
 
     def test_this_repo_is_measured(self):
-        # The real harness repo: a 40-char commit, and a dirty flag that's a real bool.
-        harness = collect(CONFIG)["orchestra"]
-        assert re.fullmatch(r"[0-9a-f]{40}", harness["commit"])
-        assert isinstance(harness["dirty"], bool)
-
+        # The real repo: a 40-char commit, and a dirty flag that's a real bool.
+        version = provenance.orchestra_version()
+        assert re.fullmatch(r"[0-9a-f]{40}", version["commit"])
+        assert isinstance(version["dirty"], bool)
 
 
 class TestDescribeInstall:

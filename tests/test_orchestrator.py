@@ -10,7 +10,8 @@ from orchestra import config, orchestrator
 from orchestra.config import Project
 from orchestra.policy import deny_all
 from orchestra.tools import Toolset
-from tests.fakes import FakeClient, reply
+from tests.test_records import read_log
+from tests.fakes import FakeClient, always, reply
 
 YES = lambda name, arguments: None  # an approver that approves everything (tests only)
 
@@ -46,7 +47,7 @@ def captured_run(monkeypatch):
 class TestRun:
     def test_wires_config_client_and_toolset(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", tools=["read_file", "bash"])
-        assert orchestrator.run("a task") == "agent result"
+        assert orchestrator.run("a task", app="orchestra-test") == "agent result"
         assert captured_run["task"] == "a task"
         assert captured_run["config"]["model"] == "m"
         assert captured_run["config"]["system_prompt"] == "Test prompt."
@@ -58,40 +59,40 @@ class TestRun:
     def test_approver_is_passed_through(self, agents_dir, captured_run):
         # the interface decides how "ask" gets answered; the orchestrator just uses it
         write_agent(agents_dir, "base", tools=["bash"])
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         assert captured_run["toolset"].policy.approver is YES
 
     def test_default_agent_is_base(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", prompt="I am base.")
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         assert captured_run["config"]["system_prompt"] == "I am base."
 
     def test_named_agent(self, agents_dir, captured_run):
         write_agent(agents_dir, "base")
         write_agent(agents_dir, "reader", tools=["read_file"], prompt="I am reader.")
-        orchestrator.run("t", agent_name="reader")
+        orchestrator.run("t", app="orchestra-test", agent_name="reader")
         assert captured_run["config"]["system_prompt"] == "I am reader."
         assert list(captured_run["toolset"].tools) == ["read_file"]
 
     def test_no_tools_key_means_no_tools(self, agents_dir, captured_run):
         # Access is opt-in: forgetting `tools:` must not hand out bash.
         write_agent(agents_dir, "base", tools=None)
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         assert captured_run["toolset"].tools == {}
 
     def test_unknown_agent(self, agents_dir, captured_run):
         with pytest.raises(FileNotFoundError):
-            orchestrator.run("t", agent_name="ghost")
+            orchestrator.run("t", app="orchestra-test", agent_name="ghost")
 
     def test_tool_typo_fails_before_any_model_call(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", tools=["read_fle"])
         with pytest.raises(ValueError, match="read_fle"):
-            orchestrator.run("t")
+            orchestrator.run("t", app="orchestra-test")
         assert captured_run == {}  # the agent never started
 
     def test_config_includes_agent_name(self, agents_dir, captured_run):
         write_agent(agents_dir, "reader")
-        orchestrator.run("t", agent_name="reader")
+        orchestrator.run("t", app="orchestra-test", agent_name="reader")
         assert captured_run["config"]["name"] == "reader"
 
     def test_end_to_end_with_fake_model(self, agents_dir, monkeypatch):
@@ -99,12 +100,12 @@ class TestRun:
         write_agent(agents_dir, "base", tools=["read_file"])
         client = FakeClient([reply("hello from the fake model")])
         monkeypatch.setattr(orchestrator, "make_client", lambda: client)
-        assert orchestrator.run("say hi") == "hello from the fake model"
+        assert orchestrator.run("say hi", app="orchestra-test") == "hello from the fake model"
         assert client.requests[0]["messages"][0]["content"] == "Test prompt."
 
 
 class TestSessionsAndTraces:
-    """Each `orchestra "task"` run is a new session with one turn: sessions/<id>/turn-001.jsonl."""
+    """Each `orchestra "task"` run is a new session with one turn: sessions/<id>/trace.jsonl."""
 
     @pytest.fixture
     def fake_model(self, agents_dir, monkeypatch):
@@ -118,27 +119,27 @@ class TestSessionsAndTraces:
         return [json.loads(line) for line in path.read_text().splitlines()]
 
     def test_each_run_is_a_new_session(self, fake_model, sessions_dir, monkeypatch):
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("again")]))
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         assert len(self.session_dirs(sessions_dir)) == 2
 
     def test_session_folder_contents(self, fake_model, sessions_dir):
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}", session.name)
-        assert sorted(p.name for p in session.iterdir()) == ["messages.jsonl", "session.json", "turn-001.jsonl", "workspace"]
+        assert sorted(p.name for p in session.iterdir()) == ["messages.jsonl", "session.json", "trace.jsonl", "workspace"]
 
     def test_session_records_agent_and_version(self, fake_model, sessions_dir):
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
         meta = json.loads((session / "session.json").read_text())
-        trace = self.read(session / "turn-001.jsonl")
+        trace = self.read(session / "trace.jsonl")
         assert meta["agent"] == "base"
-        assert meta["agent_version"] == trace[0]["provenance"]["agent_version"]  # same config, same hash
+        assert meta["agent_version"] == trace[0]["agent_version"]  # same config, same hash
 
     def test_messages_saved(self, fake_model, sessions_dir):
-        orchestrator.run("say hi")
+        orchestrator.run("say hi", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
         assert self.read(session / "messages.jsonl") == [
             {"role": "system", "content": "Pinned prompt."},
@@ -147,30 +148,29 @@ class TestSessionsAndTraces:
         ]
 
     def test_trace_contents(self, fake_model, sessions_dir):
-        orchestrator.run("say hi")
+        orchestrator.run("say hi", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
-        events = self.read(session / "turn-001.jsonl")
-        assert [e["event"] for e in events] == ["run_start", "model_response", "run_end"]
-        assert events[0]["task"] == "say hi"
-        assert events[0]["config"]["name"] == "base"
+        events = self.read(session / "trace.jsonl")
+        assert [e["event"] for e in events] == ["turn_start", "model_call", "turn_end"]
+        assert (events[0]["turn"], events[0]["task"]) == (1, "say hi")
         assert events[0]["approver"] == "deny_all"  # run()'s default
-        assert events[-1]["answer"] == "the answer"
+        assert (events[-1]["turn"], events[-1]["outcome"]) == (1, "answered")
 
     def test_approver_is_visible_in_trace(self, fake_model, sessions_dir):
         def ask_nobody(name, arguments):
             return "no"
 
-        orchestrator.run("t", approver=ask_nobody)
+        orchestrator.run("t", app="orchestra-test", approver=ask_nobody)
         (session,) = self.session_dirs(sessions_dir)
-        assert self.read(session / "turn-001.jsonl")[0]["approver"] == "ask_nobody"
+        assert self.read(session / "trace.jsonl")[0]["approver"] == "ask_nobody"
 
     def test_crashed_run_still_leaves_session_and_trace(self, agents_dir, sessions_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # first model call fails
         with pytest.raises(AssertionError):
-            orchestrator.run("t")
+            orchestrator.run("t", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
-        assert self.read(session / "turn-001.jsonl")[-1]["outcome"] == "crashed"
+        assert self.read(session / "trace.jsonl")[-1]["outcome"] == "crashed"
         assert self.read(session / "messages.jsonl")[-1] == {"role": "user", "content": "t"}  # saved before the crash
 
 
@@ -197,14 +197,14 @@ class TestWorkspaces:
 
     def test_default_fresh_folder_inside_the_session(self, writes_a_file, sessions_dir):
         writes_a_file()
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         assert (self.only_session(sessions_dir) / "workspace" / "marker.txt").read_text() == "hi"
 
     def test_cli_workspace(self, writes_a_file, sessions_dir, tmp_path):
         writes_a_file()
         project = tmp_path / "project"
         project.mkdir()
-        orchestrator.run("t", workspace=project)
+        orchestrator.run("t", app="orchestra-test", workspace=project)
         assert (project / "marker.txt").read_text() == "hi"
         meta = json.loads((self.only_session(sessions_dir) / "session.json").read_text())
         assert meta["workspace"] == str(project.resolve())
@@ -213,14 +213,14 @@ class TestWorkspaces:
         project = tmp_path / "from_config"
         project.mkdir()
         writes_a_file(f"workspace: {project}\n")
-        orchestrator.run("t")
+        orchestrator.run("t", app="orchestra-test")
         assert (project / "marker.txt").read_text() == "hi"
 
     def test_cli_wins_over_agent_file(self, writes_a_file, tmp_path):
         from_config, from_cli = tmp_path / "from_config", tmp_path / "from_cli"
         from_config.mkdir(), from_cli.mkdir()
         writes_a_file(f"workspace: {from_config}\n")
-        orchestrator.run("t", workspace=from_cli)
+        orchestrator.run("t", app="orchestra-test", workspace=from_cli)
         assert (from_cli / "marker.txt").exists()
         assert not (from_config / "marker.txt").exists()
 
@@ -229,7 +229,7 @@ class TestWorkspaces:
         missing = tmp_path / "typo"
         writes_a_file(f"workspace: {missing}\n" if source == "config" else "")
         with pytest.raises(ValueError, match="not an existing folder"):
-            orchestrator.run("t", workspace=missing if source == "cli" else None)
+            orchestrator.run("t", app="orchestra-test", workspace=missing if source == "cli" else None)
         assert not missing.exists()  # not quietly created
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())  # no session either
 
@@ -272,66 +272,67 @@ class TestEnvironments:
 
     def test_workspace_is_set_up_before_the_first_turn(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         assert (self.only_session(sessions_dir) / "workspace" / "made.txt").read_text() == "built\n"
 
     def test_agent_commands_see_the_environment(self, setup_env):
         client = setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         tool_result = [m for m in client.requests[1]["messages"] if m["role"] == "tool"][0]["content"]
         assert tool_result.startswith("[hello]")
 
     def test_prompt_is_added_to_the_system_prompt(self, setup_env):
         client = setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         assert client.requests[0]["messages"][0]["content"] == "Base prompt.\n\nYou have made.txt."
 
     def test_recorded_in_session_and_trace(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         session = self.only_session(sessions_dir)
         meta = json.loads((session / "session.json").read_text())
         assert meta["environment"]["name"] == "greet"
         assert meta["environment"]["variables"] == {"GREETING": "hello"}
-        start = json.loads((session / "turn-001.jsonl").read_text().splitlines()[0])
-        assert start["config"]["environment"] == {"name": "greet", "version": meta["environment"]["version"]}
+        # the environment is part of the agent's definition, so the turn's agent_version covers it
+        start = json.loads((session / "trace.jsonl").read_text().splitlines()[0])
+        assert start["agent_version"] == meta["agent_version"]
 
     def test_environment_content_changes_the_agent_version(self, setup_env, sessions_dir):
         setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         (setup_env.envs / "greet.yaml").write_text("env:\n  GREETING: changed\n")
         setup_env()
-        orchestrator.run("t", approver=YES)
+        orchestrator.run("t", app="orchestra-test", approver=YES)
         versions = {json.loads((s / "session.json").read_text())["agent_version"] for s in sessions_dir.iterdir()}
         assert len(versions) == 2  # same agent file, different environment content: a different agent
 
     def test_cli_none_overrides_agent_file(self, setup_env, sessions_dir):
         client = setup_env()
-        orchestrator.run("t", approver=YES, environment="none")
+        orchestrator.run("t", app="orchestra-test", approver=YES, environment="none")
         assert not (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
         assert client.requests[0]["messages"][0]["content"] == "Base prompt."
 
     def test_cli_names_an_environment(self, setup_env, sessions_dir):
         setup_env(environment_line="")
-        orchestrator.run("t", approver=YES, environment="greet")
+        orchestrator.run("t", app="orchestra-test", approver=YES, environment="greet")
         assert (self.only_session(sessions_dir) / "workspace" / "made.txt").exists()
 
     def test_unknown_environment_fails_before_anything_is_created(self, setup_env, sessions_dir):
         setup_env(environment_line="environment: nope\n")
         with pytest.raises(Exception, match="no environment 'nope'"):
-            orchestrator.run("t", approver=YES)
+            orchestrator.run("t", app="orchestra-test", approver=YES)
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
 
     def test_failed_setup_leaves_no_session(self, setup_env, sessions_dir):
         setup_env(environment_line="environment: broken\n")
         with pytest.raises(Exception, match="exit 3"):
-            orchestrator.run("t", approver=YES)
+            orchestrator.run("t", app="orchestra-test", approver=YES)
         assert not any(sessions_dir.iterdir())
 
     def test_tool_typo_fails_before_anything_is_created(self, setup_env, agents_dir, sessions_dir):
         (agents_dir / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - bsh\n---\nP\n")
         with pytest.raises(ValueError, match="bsh"):
-            orchestrator.run("t", approver=YES)
+            orchestrator.run("t", app="orchestra-test", approver=YES)
         assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
 
 
@@ -341,25 +342,25 @@ class TestConversation:
     def test_turn_returns_answer_and_totals(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        result = orchestrator.new_conversation("base").turn("t")
+        result = orchestrator.new_conversation("base", app="orchestra-test").turn("t")
         assert result.answer == "hi"
-        assert (result.run_end["event"], result.run_end["steps"]) == ("run_end", 1)
+        assert (result.summary["event"], result.summary["steps"]) == ("turn_end", 1)
 
     def test_turn_passes_events_to_the_interface(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
         seen = []
-        orchestrator.new_conversation("base").turn("t", on_event=seen.append)
-        assert [e["event"] for e in seen] == ["run_start", "model_response", "run_end"]
+        orchestrator.new_conversation("base", app="orchestra-test").turn("t", on_event=seen.append)
+        assert [e["event"] for e in seen] == ["turn_start", "model_call", "turn_end"]
 
     def test_sandboxed_by_default(self, agents_dir, monkeypatch):
         from orchestra.sandbox import default_sandbox
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        conv = orchestrator.new_conversation("base")
+        conv = orchestrator.new_conversation("base", app="orchestra-test")
         assert conv.toolset.context.sandbox == default_sandbox()
         conv.turn("t")
-        start = __import__("json").loads(conv.session.trace_path(1).read_text().splitlines()[0])
+        start = __import__("json").loads(conv.session.trace_path.read_text().splitlines()[0])
         assert start["sandbox"] == default_sandbox().name  # recorded in the trace
 
     @pytest.mark.parametrize("start", ["new", "resume"])
@@ -368,11 +369,11 @@ class TestConversation:
         from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        existing = orchestrator.new_conversation("base").session.id if start == "resume" else None
+        existing = orchestrator.new_conversation("base", app="orchestra-test").session.id if start == "resume" else None
         before = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
         with pytest.raises(ValueError, match="needs the sandbox"):
             if start == "new":
-                orchestrator.new_conversation("base", approver=approve_all, sandbox=Unsandboxed())
+                orchestrator.new_conversation("base", app="orchestra-test", approver=approve_all, sandbox=Unsandboxed())
             else:
                 orchestrator.resume_conversation(existing, approver=approve_all, sandbox=Unsandboxed())
         after = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
@@ -386,7 +387,7 @@ class TestConversation:
         (tmp_path / "environments" / "net.yaml").write_text("sandbox:\n  readable: [/opt/x]\n  network: true\n")
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))
-        conv = orchestrator.new_conversation("base", environment="net", sandbox=Seatbelt())
+        conv = orchestrator.new_conversation("base", app="orchestra-test", environment="net", sandbox=Seatbelt())
         sandbox = conv.toolset.context.sandbox
         assert (sandbox.network, sandbox.readable) == (True, (Path("/opt/x"),))  # the interface's Seatbelt + the env's rules
 
@@ -394,22 +395,39 @@ class TestConversation:
         from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        assert orchestrator.new_conversation("base", sandbox=Unsandboxed()).toolset.context.sandbox == Unsandboxed()
+        assert orchestrator.new_conversation("base", app="orchestra-test", sandbox=Unsandboxed()).toolset.context.sandbox == Unsandboxed()
 
     def test_turns_share_the_session(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         client = FakeClient([reply("one"), reply("two")])
         monkeypatch.setattr(orchestrator, "make_client", lambda: client)
-        conv = orchestrator.new_conversation("base")
+        conv = orchestrator.new_conversation("base", app="orchestra-test")
         conv.turn("first")
         conv.turn("second")
         assert conv.session.next_turn == 3
         assert client.requests[1]["messages"][-2]["content"] == "one"
 
+    def test_calls_are_recorded_under_the_app(self, agents_dir, monkeypatch, orchestra_dir):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one"), reply("two")]))
+        conv = orchestrator.new_conversation("base", app="jewels")
+        conv.turn("first")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        orchestrator.resume_conversation(conv.session.id).turn("second")  # a resumed session keeps its app
+        calls = read_log(orchestra_dir, "jewels")
+        assert [c["response"]["content"] for c in calls] == ["one", "two"]
+        assert {c["session"] for c in calls} == {conv.session.id}
+
+    def test_a_bad_app_fails_before_any_session_exists(self, agents_dir, sessions_dir):
+        write_agent(agents_dir, "base")
+        with pytest.raises(ValueError, match="app must be a plain name"):
+            orchestrator.new_conversation("base", app="../escape")
+        assert not sessions_dir.exists() or not any(sessions_dir.iterdir())
+
     def test_resume(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
-        first = orchestrator.new_conversation("base")
+        first = orchestrator.new_conversation("base", app="orchestra-test")
         first.turn("first")
         assert orchestrator.session_exists(first.session.id)
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
@@ -426,7 +444,7 @@ class TestConversation:
         write_agent(agents_dir, "base")
         monkeypatch.delenv("OMLX_API_KEY", raising=False)
         try:
-            orchestrator.new_conversation("base")
+            orchestrator.new_conversation("base", app="orchestra-test")
         except Exception as e:  # what a host program would write
             assert isinstance(e, MissingAPIKey)
         else:
@@ -455,7 +473,7 @@ class TestLibraryUse:
         client = FakeClient([reply(tool_calls=[call("weather", {"city": "Paris"})]), reply("It's sunny.")])
         monkeypatch.setattr(orchestrator, "make_client", lambda: client)
         project = Project.find(agents_dir, [Tool(fn=weather, schema=schema, permission="allow")])
-        conv = orchestrator.new_conversation("forecaster", project=project)
+        conv = orchestrator.new_conversation("forecaster", app="orchestra-test", project=project)
         assert conv.turn("weather in Paris?").answer == "It's sunny."
         assert client.requests[0]["tools"][0]["function"]["name"] == "weather"  # the model was shown it
         assert client.requests[1]["messages"][-1]["content"] == "sunny in Paris"  # and it ran
@@ -467,19 +485,19 @@ class TestLibraryUse:
         monkeypatch.chdir(tmp_path)  # tmp_path itself has no agents/
         client = FakeClient([reply("hi")])
         monkeypatch.setattr(orchestrator, "make_client", lambda: client)
-        orchestrator.new_conversation("base", project=Project(project)).turn("t")
+        orchestrator.new_conversation("base", app="orchestra-test", project=Project(project)).turn("t")
         assert client.requests[0]["messages"][0]["content"] == "Other project's agent."
 
     def test_session_records_its_config_root(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
-        conv = orchestrator.new_conversation("base")
+        conv = orchestrator.new_conversation("base", app="orchestra-test")
         assert conv.session.config_root == agents_dir.parent.resolve()
 
     def test_resume_reads_the_sessions_own_agent_file(self, agents_dir, tmp_path, monkeypatch):
         write_agent(agents_dir, "base", tools=["read_file"])
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
-        first = orchestrator.new_conversation("base")
+        first = orchestrator.new_conversation("base", app="orchestra-test")
         first.turn("t")
         elsewhere = tmp_path / "elsewhere"
         (elsewhere / "agents").mkdir(parents=True)
@@ -488,3 +506,41 @@ class TestLibraryUse:
         monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
         again = orchestrator.resume_conversation(first.session.id)
         assert list(again.toolset.tools) == ["read_file"]  # the original project's agent, not the nearby one
+
+
+class TestWhereSessionsLive:
+    """Each app's sessions are in ~/.orchestra/<app>/sessions/; resuming finds one by id alone."""
+
+    @pytest.fixture
+    def answers(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(always(lambda: reply("ok"))))
+
+    def test_in_the_apps_folder(self, answers, orchestra_dir):
+        conv = orchestrator.new_conversation("base", app="jewels")
+        assert conv.session.dir == orchestra_dir / "jewels" / "sessions" / conv.session.id
+
+    def test_found_by_id_whichever_app(self, answers, orchestra_dir):
+        a = orchestrator.new_conversation("base", app="jewels").session
+        b = orchestrator.new_conversation("base", app="chaos").session
+        assert orchestrator.find_session(a.id) == orchestra_dir / "jewels" / "sessions"
+        assert orchestrator.find_session(b.id) == orchestra_dir / "chaos" / "sessions"
+        assert orchestrator.resume_conversation(b.id).session.app == "chaos"
+
+    def test_sessions_from_before_apps_still_resume(self, answers, orchestra_dir):
+        conv = orchestrator.new_conversation("base", app="orchestra-cli")
+        old = orchestra_dir / "sessions"  # where every session used to go
+        old.mkdir()
+        conv.session.dir.rename(old / conv.session.id)
+        assert orchestrator.find_session(conv.session.id) == old
+        assert orchestrator.resume_conversation(conv.session.id).turn("again").answer == "ok"
+
+    @pytest.mark.parametrize("session_id", ["nope", "", "../jewels", ".hidden", "a/b"])
+    def test_not_found(self, answers, session_id):
+        assert orchestrator.find_session(session_id) is None
+        assert not orchestrator.session_exists(session_id)
+
+    def test_resuming_an_unknown_session(self, answers):
+        with pytest.raises(ValueError, match="no session 'nope'"):
+            orchestrator.resume_conversation("nope")
+

@@ -6,15 +6,14 @@ compaction (later) will rewrite a session's history, while traces never change.
 
 On disk, one folder per session:
 
-    sessions/<id>/session.json      id, agent, agent_version, workspace, config_root, environment, created: written once
+    sessions/<id>/session.json      id, app, agent, agent_version, workspace, config_root, environment, created: written once
     sessions/<id>/messages.jsonl    the conversation, one message per line, appended as it happens
-    sessions/<id>/turn-001.jsonl    the trace of turn 1, turn-002.jsonl of turn 2, ...
+    sessions/<id>/trace.jsonl       the session's history, in order: each turn's events (tracer.py)
     sessions/<id>/workspace/        where the agent works, unless the session was given another folder
 
-A turn is one instruction plus everything the agent does about it: one run of the
-loop, one trace file. The trace files are the *only* record of which turns happened.
-Creating its trace is the first thing a turn does, so a turn that crashes or is
-killed still counts, and numbering can never collide.
+A turn is one instruction plus everything the agent does about it: one run of the loop.
+The trace's turn_start lines are the *only* record of which turns happened. Writing
+turn_start is the first thing a turn does, so a turn that crashes or is killed still counts.
 
 This module only reads and writes files. It knows nothing about models or tools.
 """
@@ -27,6 +26,7 @@ from pathlib import Path
 
 from orchestra.environment import Environment, fill_workspace
 from orchestra.sandbox import SandboxRules
+from orchestra.tracer import TRACE_FILE, count_turns
 
 SESSION_FILE = "session.json"
 MESSAGES_FILE = "messages.jsonl"
@@ -56,6 +56,12 @@ class Session:
     @property
     def id(self) -> str:
         return self.meta["id"]
+
+    @property
+    def app(self) -> str:
+        """Which app this session works for: its model calls are recorded under this name."""
+        # Sessions from before apps were recorded were almost all the CLI's.
+        return self.meta.get("app", "orchestra-cli")
 
     @property
     def agent(self) -> str:
@@ -98,13 +104,14 @@ class Session:
         return SandboxRules.from_dict(environment.get("sandbox") or {})
 
     @property
-    def next_turn(self) -> int:
-        """One past the number of turn traces on disk, however those turns ended."""
-        return len(list(self.dir.glob("turn-*.jsonl"))) + 1
+    def trace_path(self) -> Path:
+        """The session's trace: sessions/<id>/trace.jsonl. Every turn appends to it."""
+        return self.dir / TRACE_FILE
 
-    def trace_path(self, turn: int) -> Path:
-        """Where turn `turn`'s trace goes: sessions/<id>/turn-002.jsonl."""
-        return self.dir / f"turn-{turn:03d}.jsonl"
+    @property
+    def next_turn(self) -> int:
+        """One past the number of turns the trace has started, however those turns ended."""
+        return count_turns(self.trace_path) + 1
 
     @classmethod
     def create(
@@ -116,6 +123,8 @@ class Session:
         workspace: Path | None = None,
         environment: Environment | None = None,
         config_root: Path | None = None,
+        *,
+        app: str,
     ) -> "Session":
         """Start a new session. The system prompt becomes message 0 and is fixed from here on:
         editing the agent file later doesn't change sessions that already exist.
@@ -128,6 +137,7 @@ class Session:
         environment_variables). None means no environment.
         `config_root`: the folder whose agents/ this session's agent came from, so resuming
         finds the same agent file wherever you resume from.
+        `app`: who the session works for (records.py); its model calls are recorded under it.
         """
         session_id = new_session_id(agent)
         directory = root / session_id
@@ -137,6 +147,7 @@ class Session:
             workspace.mkdir()
         meta = {
             "id": session_id,
+            "app": app,
             "agent": agent,
             "agent_version": agent_version,  # what the session started with; each turn's trace has its own provenance
             "workspace": str(workspace.resolve()),

@@ -9,6 +9,13 @@ from orchestra.interfaces import cli
 from orchestra.session import INTERRUPTED
 from orchestra.tools import REGISTRY, Tool
 from tests.fakes import FakeClient, call, reply
+from tests.test_records import read_log
+
+
+@pytest.fixture
+def sessions_dir(orchestra_dir):
+    """The CLI's sessions: it works for the app "orchestra-cli", so ~/.orchestra/orchestra-cli/sessions/."""
+    return orchestra_dir / "orchestra-cli" / "sessions"
 
 
 @pytest.fixture
@@ -46,13 +53,19 @@ def read(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
+def events(session, kind):
+    """The session trace's events of one kind, in order."""
+    return [e for e in read(session / "trace.jsonl") if e["event"] == kind]
+
+
 class TestNewChat:
     def test_turns_share_one_session(self, agents_dir, sessions_dir, typed, model):
         typed("first question", "second question")
         client = model(reply("first answer"), reply("second answer"))
         cli.main(["chat"])
         session = only_session(sessions_dir)
-        assert sorted(p.name for p in session.glob("turn-*.jsonl")) == ["turn-001.jsonl", "turn-002.jsonl"]
+        # one trace for the session, both turns in it
+        assert [e["turn"] for e in events(session, "turn_start")] == [1, 2]
         # turn 2 sees all of turn 1
         assert client.requests[1]["messages"] == [
             {"role": "system", "content": "Chat prompt."},
@@ -92,8 +105,8 @@ class TestNewChat:
         typed("use the tool")
         model(reply(tool_calls=[call("echo", {"text": "hi"})]), reply("done"))
         cli.main(["chat"])
-        events = read(only_session(sessions_dir) / "turn-001.jsonl")
-        assert [e["event"] for e in events] == ["run_start", "model_response", "tool_call", "model_response", "run_end"]
+        events = read(only_session(sessions_dir) / "trace.jsonl")
+        assert [e["event"] for e in events] == ["turn_start", "model_call", "tool_run", "model_call", "turn_end"]
 
 
 class TestSurvivingProblems:
@@ -113,8 +126,7 @@ class TestSurvivingProblems:
         sent = client.requests[1]["messages"]
         assert {"role": "tool", "tool_call_id": "c1", "content": INTERRUPTED} in sent
         session = only_session(sessions_dir)
-        assert read(session / "turn-001.jsonl")[-1]["outcome"] == "interrupted"
-        assert read(session / "turn-002.jsonl")[-1]["outcome"] == "answered"
+        assert [e["outcome"] for e in events(session, "turn_end")] == ["interrupted", "answered"]
 
     def test_error_mid_turn_reports_and_continues(self, agents_dir, sessions_dir, typed, model, capsys):
         typed("first", "second")
@@ -124,8 +136,7 @@ class TestSurvivingProblems:
         assert "(turn failed: ConnectionError: model server went away)" in captured.err
         assert "back again" in captured.out
         session = only_session(sessions_dir)
-        assert read(session / "turn-001.jsonl")[-1]["outcome"] == "crashed"
-        assert read(session / "turn-002.jsonl")[-1]["outcome"] == "answered"
+        assert [e["outcome"] for e in events(session, "turn_end")] == ["crashed", "answered"]
 
 
 class TestResume:
@@ -145,7 +156,7 @@ class TestResume:
             {"role": "assistant", "content": "answer to first"},
             {"role": "user", "content": "second"},
         ]
-        assert (session / "turn-002.jsonl").is_file()  # numbering continues
+        assert [e["turn"] for e in events(session, "turn_start")] == [1, 2]  # numbering continues
 
     def test_announces_the_resume(self, agents_dir, sessions_dir, typed, model, capsys):
         session = self.start_chat(typed, model, sessions_dir, "first")
@@ -163,14 +174,14 @@ class TestResume:
         cli.main(["chat", "--resume", session.name])
         assert client.requests[0]["messages"][0] == {"role": "system", "content": "Chat prompt."}
 
-    def test_uses_the_agent_files_current_model(self, agents_dir, sessions_dir, typed, model):
+    def test_uses_the_agent_files_current_model(self, agents_dir, sessions_dir, typed, model, orchestra_dir):
         session = self.start_chat(typed, model, sessions_dir, "first")
         write_agent(agents_dir, model="newer-model")
         typed("second")
         client = model(reply("ok"))
         cli.main(["chat", "--resume", session.name])
         assert client.requests[0]["model"] == "newer-model"
-        assert read(session / "turn-002.jsonl")[0]["config"]["model"] == "newer-model"  # the trace says so
+        assert read_log(orchestra_dir, "orchestra-cli")[-1]["request"]["model"] == "newer-model"  # the record says so
 
     def test_keeps_the_workspace(self, agents_dir, sessions_dir, typed, model):
         write_agent(agents_dir, tools=("write_file",))

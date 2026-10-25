@@ -1,8 +1,10 @@
 """Provenance: what produced a run, recorded so it can be filtered on later (evals, fine-tuning data).
 
-A hash *identifies* content, it doesn't store it. The full agent definition is
-already in every trace's run_start.config; agent_version is the key to find and
-group runs by it. The harness code is recoverable from git by commit, but only
+A hash *identifies* content, it doesn't store it. The agent definition's parts are
+stored where they're used: model, temperature, system prompt, and tool schemas in every
+model call's record; max_steps in the trace's turn_start; name, workspace, and environment
+in session.json. agent_version (in turn_start) is the key to find and group turns by
+definition. The harness code is recoverable from git by commit, but only
 when the working tree was clean (dirty=False): uncommitted changes exist nowhere.
 
 Which harness code ran depends on how it was installed, and that's checked, never
@@ -109,13 +111,3 @@ def git_state(repo: Path) -> dict:
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=5, check=True)
     return result.stdout.strip()
-
-
-def collect(config: dict) -> dict:
-    """Everything recorded about where a run came from. Goes in run_start.provenance."""
-    return {
-        "agent_version": agent_version(config),
-        "orchestra": orchestra_version(),
-        # The model asked for is config["model"], right next to this in run_start; the model
-        # the server says actually answered is in each model_response event.
-    }

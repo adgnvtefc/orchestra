@@ -18,7 +18,7 @@ def root(tmp_path):
 
 @pytest.fixture
 def session(root):
-    return Session.create(root, agent="base", system_prompt="You are a test agent.", agent_version="abc123def456")
+    return Session.create(root, agent="base", system_prompt="You are a test agent.", agent_version="abc123def456", app="orchestra-test")
 
 
 def lines(path):
@@ -57,7 +57,7 @@ class TestCreate:
         assert meta["agent"] == session.agent == "base"
         assert meta["agent_version"] == "abc123def456"
         assert "created" in meta
-        assert set(meta) == {"id", "agent", "agent_version", "workspace", "config_root", "environment", "created"}
+        assert set(meta) == {"id", "app", "agent", "agent_version", "workspace", "config_root", "environment", "created"}
         assert meta["config_root"] is None  # not given here
         assert meta["environment"] is None
 
@@ -66,8 +66,8 @@ class TestCreate:
         assert lines(session.dir / MESSAGES_FILE) == list(session.messages)
 
     def test_two_sessions_never_share_a_folder(self, root):
-        a = Session.create(root, "base", "p", "v")
-        b = Session.create(root, "base", "p", "v")
+        a = Session.create(root, "base", "p", "v", app="orchestra-test")
+        b = Session.create(root, "base", "p", "v", app="orchestra-test")
         assert a.dir != b.dir
 
     def test_next_turn_starts_at_one(self, session):
@@ -81,21 +81,21 @@ class TestWorkspace:
         assert list(session.workspace.iterdir()) == []
 
     def test_sessions_never_share_a_default_workspace(self, root):
-        a = Session.create(root, "base", "p", "v")
-        b = Session.create(root, "base", "p", "v")
+        a = Session.create(root, "base", "p", "v", app="orchestra-test")
+        b = Session.create(root, "base", "p", "v", app="orchestra-test")
         assert a.workspace != b.workspace
 
     def test_given_folder_is_used_and_not_copied(self, root, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
-        session = Session.create(root, "base", "p", "v", workspace=project)
+        session = Session.create(root, "base", "p", "v", workspace=project, app="orchestra-test")
         assert session.workspace == project.resolve()
         assert not (session.dir / "workspace").exists()  # no unused default folder
 
     def test_recorded_and_kept_on_resume(self, root, tmp_path):
         project = tmp_path / "project"
         project.mkdir()
-        session = Session.create(root, "base", "p", "v", workspace=project)
+        session = Session.create(root, "base", "p", "v", workspace=project, app="orchestra-test")
         assert json.loads((session.dir / SESSION_FILE).read_text())["workspace"] == str(project.resolve())
         assert Session.load(root, session.id).workspace == project.resolve()
 
@@ -108,29 +108,37 @@ ENV = Environment(
 
 class TestEnvironmentRecord:
     def test_recorded_with_workspace_unfilled(self, root):
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         assert json.loads((session.dir / SESSION_FILE).read_text())["environment"] == {
             "name": "py", "version": "abc", "variables": {"PATH": "{workspace}/.venv/bin", "X": "1"},
             "sandbox": {"readable": ["/opt/toolchain"], "network": True},
         }
 
     def test_variables_filled_in_on_read(self, root):
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         assert session.environment_variables == {"PATH": f"{session.workspace}/.venv/bin", "X": "1"}
         assert Session.load(root, session.id).environment_variables == session.environment_variables
 
     def test_sandbox_rules_survive_reload(self, root):
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         assert Session.load(root, session.id).sandbox_rules == SandboxRules(readable=(Path("/opt/toolchain"),), network=True)
 
     def test_older_sessions_keep_what_they_used_to_get(self, root):
         # Sessions recorded before sandbox rules existed must still resume with a working .venv.
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         meta = json.loads((session.dir / SESSION_FILE).read_text())
         del meta["environment"]["sandbox"]
         (session.dir / SESSION_FILE).write_text(json.dumps(meta))
         rules = Session.load(root, session.id).sandbox_rules
         assert rules == SandboxRules(readable=(Path.home() / ".local" / "share" / "uv",))
+
+    def test_older_sessions_belong_to_the_cli(self, root):
+        # Sessions recorded before apps existed were almost all the CLI's.
+        session = Session.create(root, "base", "p", "v", app="jewels")
+        meta = json.loads((session.dir / SESSION_FILE).read_text())
+        del meta["app"]
+        (session.dir / SESSION_FILE).write_text(json.dumps(meta))
+        assert Session.load(root, session.id).app == "orchestra-cli"
 
     def test_no_environment_no_sandbox_rules(self, session):
         assert session.sandbox_rules == SandboxRules()
@@ -140,13 +148,13 @@ class TestEnvironmentRecord:
         assert session.environment is None
 
     def test_environment_name_and_version(self, root):
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         assert session.environment == {"name": "py", "version": "abc"}
 
     def test_session_and_environment_fill_the_same_way(self, root):
         # Setup commands use Environment.variables(), the agent's commands use the session's:
         # one shared function, so they can't disagree.
-        session = Session.create(root, "base", "p", "v", environment=ENV)
+        session = Session.create(root, "base", "p", "v", environment=ENV, app="orchestra-test")
         assert session.environment_variables == ENV.variables(session.workspace)
 
 
@@ -200,40 +208,39 @@ class TestLoad:
 
 
 class TestTurns:
-    """The trace files are the only record of turns: next_turn counts them, however each ended."""
+    """The trace's turn_start lines are the only record of turns: next_turn counts them, however each ended.
+    (Reading the trace is tracer.count_turns, tested in test_tracer.py.)"""
 
-    def write_trace(self, session, turn, *events):
-        session.trace_path(turn).write_text("".join(json.dumps(e) + "\n" for e in events))
+    def write_trace(self, session, *events):
+        with session.trace_path.open("a") as file:
+            file.write("".join(json.dumps(e) + "\n" for e in events))
 
     def test_trace_path(self, session):
-        assert session.trace_path(1) == session.dir / "turn-001.jsonl"
-        assert session.trace_path(42) == session.dir / "turn-042.jsonl"
+        assert session.trace_path == session.dir / "trace.jsonl"
 
-    def test_numbering_follows_trace_files(self, session):
-        self.write_trace(session, 1, {"event": "run_start"}, {"event": "run_end", "outcome": "answered"})
+    def test_numbering_follows_the_trace(self, session):
+        self.write_trace(session, {"event": "turn_start"}, {"event": "turn_end", "outcome": "answered"})
         assert session.next_turn == 2
-        self.write_trace(session, 2, {"event": "run_start"}, {"event": "run_end", "outcome": "answered"})
+        self.write_trace(session, {"event": "turn_start"}, {"event": "turn_end", "outcome": "answered"})
         assert session.next_turn == 3
 
     @pytest.mark.parametrize("ending", [
-        [{"event": "run_end", "outcome": "crashed"}],
-        [{"event": "run_end", "outcome": "interrupted"}],
-        [],  # kill -9 or power loss: no run_end was ever written
+        [{"event": "turn_end", "outcome": "crashed"}],
+        [{"event": "turn_end", "outcome": "interrupted"}],
+        [],  # kill -9 or power loss: no turn_end was ever written
     ])
     def test_a_turn_counts_however_it_ended(self, session, ending):
-        # The case the old session.json index got wrong: the turn's trace exists, so it counts.
-        self.write_trace(session, 1, {"event": "run_start"}, *ending)
+        self.write_trace(session, {"event": "turn_start"}, *ending)
         assert session.next_turn == 2
-        assert not session.trace_path(session.next_turn).exists()  # the next turn never collides
 
     def test_survives_reload(self, session, root):
-        self.write_trace(session, 1, {"event": "run_start"})
+        self.write_trace(session, {"event": "turn_start"})
         assert Session.load(root, session.id).next_turn == 2
 
     def test_session_json_never_changes(self, session):
         before = (session.dir / SESSION_FILE).read_text()
         session.append({"role": "user", "content": "hi"})
-        self.write_trace(session, 1, {"event": "run_start"})
+        self.write_trace(session, {"event": "turn_start"})
         assert (session.dir / SESSION_FILE).read_text() == before
 
     def test_other_files_are_not_turns(self, session):

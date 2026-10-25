@@ -1,11 +1,12 @@
-"""Tracer: JSONL events, written and flushed one line at a time."""
+"""Tracer: a session's trace, JSONL events written and flushed one line at a time."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from orchestra.tracer import Tracer
+from orchestra.provenance import agent_version
+from orchestra.tracer import Tracer, count_turns
 
 
 def read_lines(path: Path) -> list[dict]:
@@ -59,12 +60,13 @@ class TestFile:
             tracer.event("a")
         assert path.is_file()
 
-    def test_never_overwrites_an_existing_trace(self, tmp_path):
+    def test_appends_to_an_existing_trace(self, tmp_path):
+        # every turn of a session appends to its one trace; nothing before is ever lost
         path = tmp_path / "t.jsonl"
-        path.write_text("precious\n")
-        with pytest.raises(FileExistsError):
-            Tracer(path)
-        assert path.read_text() == "precious\n"
+        path.write_text('{"event": "earlier"}\n')
+        with Tracer(path) as tracer:
+            tracer.event("later")
+        assert [e["event"] for e in read_lines(path)] == ["earlier", "later"]
 
     def test_unencodable_values_become_strings(self, tmp_path):
         path = tmp_path / "t.jsonl"
@@ -116,82 +118,87 @@ class TestListeners:
         assert Tracer().listeners == []
 
 
-class TestRunLifecycle:
-    """start() writes run_start; exactly one run_end follows, from finish() or from __exit__."""
+CONFIG = {"name": "base", "model": "m", "temperature": 0.5, "max_steps": 7, "system_prompt": "p"}
+
+
+class TestTurnLifecycle:
+    """start() writes turn_start; exactly one turn_end follows, from finish() or from __exit__."""
 
     def kinds(self, tracer):
         return [e["event"] for e in tracer.events]
 
-    def test_start_fields(self):
-        tracer = Tracer()
-        tracer.start("task", {"model": "m"}, [{"t": 1}], "deny_all")
+    def test_start_holds_only_what_no_record_has(self):
+        tracer = Tracer(turn=3)
+        tracer.start("task", CONFIG, "deny_all", sandbox="seatbelt")
         start = tracer.events[0]
-        assert (start["event"], start["task"], start["config"], start["tools"], start["approver"]) == (
-            "run_start", "task", {"model": "m"}, [{"t": 1}], "deny_all",
-        )
+        assert set(start) == {"event", "time", "turn", "task", "agent_version", "max_steps", "approver", "sandbox"}
+        assert (start["event"], start["turn"], start["task"], start["max_steps"]) == ("turn_start", 3, "task", 7)
+        assert start["agent_version"] == agent_version(CONFIG)
+        assert (start["approver"], start["sandbox"]) == ("deny_all", "seatbelt")
 
-    def test_start_records_the_sandbox(self):
+    def test_sandbox_defaults_to_none(self):
         tracer = Tracer()
-        tracer.start("t", {}, [], "a", sandbox="seatbelt")
-        tracer.start("t", {}, [], "a")
-        assert [e["sandbox"] for e in tracer.events] == ["seatbelt", "none"]
+        tracer.start("t", CONFIG, "a")
+        assert tracer.events[0]["sandbox"] == "none"
 
-    def test_start_records_provenance(self):
-        tracer = Tracer()
-        tracer.start("t", {"model": "m", "system_prompt": "p"}, [], "a")
-        record = tracer.events[0]["provenance"]
-        assert set(record) == {"agent_version", "orchestra"}
+    def test_finish_writes_turn_end_immediately(self):
+        tracer = Tracer(turn=2)
+        tracer.start("t", CONFIG, "a")
+        tracer.finish("max_steps")
+        assert tracer.events[-1] == {"event": "turn_end", "time": tracer.events[-1]["time"], "turn": 2, "outcome": "max_steps"}
 
-    def test_finish_writes_run_end_immediately(self):
-        tracer = Tracer()
-        tracer.start("t", {}, [], "a")
-        tracer.finish("max_steps", "gave up")
-        end = tracer.events[-1]
-        assert (end["event"], end["outcome"], end["answer"]) == ("run_end", "max_steps", "gave up")
-        assert end["seconds"] >= 0
+    def test_totals_are_given_live_not_stored(self, tmp_path):
+        # derivable from the records, so the trace doesn't store them; listeners and summary get them
+        seen = []
+        with Tracer(tmp_path / "t.jsonl", listeners=[seen.append]) as tracer:
+            tracer.start("t", CONFIG, "a")
+            tracer.steps = 3  # model_call() sets this; tested end to end in test_agent.py
+            tracer.finish("answered")
+        stored = read_lines(tmp_path / "t.jsonl")[-1]
+        assert "steps" not in stored and "tokens" not in stored
+        assert seen[-1]["steps"] == tracer.summary["steps"] == 3
+        assert tracer.summary["outcome"] == "answered"
+        assert tracer.summary["seconds"] >= 0
 
-    def test_steps_counts_model_responses(self):
+    def test_no_summary_until_the_turn_ends(self):
         tracer = Tracer()
-        tracer.start("t", {}, [], "a")
-        tracer.steps = 3  # model_response() sets this; tested end to end in test_agent.py
-        tracer.finish("answered", "x")
-        assert tracer.events[-1]["steps"] == 3
+        tracer.start("t", CONFIG, "a")
+        assert tracer.summary is None
 
     def test_exit_after_finish_adds_nothing(self):
         with Tracer() as tracer:
-            tracer.start("t", {}, [], "a")
-            tracer.finish("answered", "x")
-        assert self.kinds(tracer) == ["run_start", "run_end"]
+            tracer.start("t", CONFIG, "a")
+            tracer.finish("answered")
+        assert self.kinds(tracer) == ["turn_start", "turn_end"]
 
     def test_exit_without_finish(self):
         with Tracer() as tracer:
-            tracer.start("t", {}, [], "a")
+            tracer.start("t", CONFIG, "a")
         assert tracer.events[-1]["outcome"] == "unfinished"
 
     def test_crash_recorded_and_not_swallowed(self):
         with pytest.raises(ValueError, match="bad"):
             with Tracer() as tracer:
-                tracer.start("t", {}, [], "a")
+                tracer.start("t", CONFIG, "a")
                 raise ValueError("bad")
         end = tracer.events[-1]
         assert (end["outcome"], end["error"]) == ("crashed", "ValueError: bad")
-        assert "answer" not in end
 
     def test_interrupt_recorded_and_not_swallowed(self):
         with pytest.raises(KeyboardInterrupt):
             with Tracer() as tracer:
-                tracer.start("t", {}, [], "a")
+                tracer.start("t", CONFIG, "a")
                 raise KeyboardInterrupt
         assert tracer.events[-1]["outcome"] == "interrupted"
 
     def test_crash_after_finish_keeps_the_real_outcome(self):
-        # The run itself finished; something after it failed. Still exactly one run_end.
+        # The turn itself finished; something after it failed. Still exactly one turn_end.
         with pytest.raises(RuntimeError):
             with Tracer() as tracer:
-                tracer.start("t", {}, [], "a")
-                tracer.finish("answered", "x")
+                tracer.start("t", CONFIG, "a")
+                tracer.finish("answered")
                 raise RuntimeError
-        assert self.kinds(tracer) == ["run_start", "run_end"]
+        assert self.kinds(tracer) == ["turn_start", "turn_end"]
         assert tracer.events[-1]["outcome"] == "answered"
 
     def test_exit_before_start_writes_nothing(self):
@@ -205,6 +212,33 @@ class TestRunLifecycle:
         path = tmp_path / "t.jsonl"
         with pytest.raises(ValueError):
             with Tracer(path) as tracer:
-                tracer.start("t", {}, [], "a")
+                tracer.start("t", CONFIG, "a")
                 raise ValueError("bad")
         assert read_lines(path)[-1]["outcome"] == "crashed"
+
+
+class TestCountTurns:
+    def test_no_trace_yet(self, tmp_path):
+        assert count_turns(tmp_path / "trace.jsonl") == 0
+
+    def test_counts_turn_starts_however_they_ended(self, tmp_path):
+        path = tmp_path / "trace.jsonl"
+        for turn, ending in ((1, "finish"), (2, "crash"), (3, "none")):
+            try:
+                with Tracer(path, turn=turn) as tracer:
+                    tracer.start("t", CONFIG, "a")
+                    if ending == "finish":
+                        tracer.finish("answered")
+                    elif ending == "crash":
+                        raise ValueError
+            except ValueError:
+                pass
+        assert count_turns(path) == 3
+
+    def test_older_sessions_turn_files_count_too(self, tmp_path):
+        # sessions from before one trace per session had turn-NNN.jsonl files
+        (tmp_path / "turn-001.jsonl").write_text("{}\n")
+        (tmp_path / "turn-002.jsonl").write_text("{}\n")
+        with Tracer(tmp_path / "trace.jsonl", turn=3) as tracer:
+            tracer.start("t", CONFIG, "a")
+        assert count_turns(tmp_path / "trace.jsonl") == 3

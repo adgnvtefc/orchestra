@@ -11,6 +11,6 @@ Project.at(root, extra_tools=[...]) from Python (see config.py).
 """
 
 from orchestra.tools.base import Tool, ToolContext
-from orchestra.tools.toolset import REGISTRY, Toolset, available_tools
+from orchestra.tools.toolset import REGISTRY, ToolRun, Toolset, available_tools
 
-__all__ = ["REGISTRY", "Tool", "ToolContext", "Toolset", "available_tools"]
+__all__ = ["REGISTRY", "Tool", "ToolContext", "ToolRun", "Toolset", "available_tools"]

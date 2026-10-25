@@ -13,6 +13,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from orchestra import records
 from orchestra.agent import run_agent
 from orchestra.config import Project, RunConfig, resolve_agent, resolve_run_config
 from orchestra.environment import provision
@@ -24,17 +25,32 @@ from orchestra.session import Session
 from orchestra.tools import ToolContext, Toolset
 from orchestra.tracer import Tracer
 
-# Where sessions (conversations, traces, default workspaces) are stored. Deliberately *outside*
-# this project: tools that walk up looking for their config (git, pytest, uv) would otherwise
-# find the harness's own .git and pyproject.toml from inside every workspace.
-# (~/projects/orchestra-sessions is a symlink here, for opening it in an editor.)
-SESSIONS_DIR = Path.home() / ".orchestra" / "sessions"
+def sessions_dir(app: str) -> Path:
+    """Where `app`'s sessions (conversations, traces, default workspaces) are stored:
+    ~/.orchestra/<app>/sessions/. Deliberately *outside* this project: tools that walk up
+    looking for their config (git, pytest, uv) would otherwise find the harness's own .git
+    and pyproject.toml from inside every workspace."""
+    return records.app_dir(app) / "sessions"
+
+
+def find_session(session_id: str) -> Path | None:
+    """The folder that holds session `session_id`, whichever app it belongs to, or None.
+
+    Session ids are unique, so resuming never needs the app's name. Sessions from before
+    they were grouped by app are in ~/.orchestra/sessions/, which is looked in last.
+    """
+    if not session_id or "/" in session_id or session_id.startswith("."):  # an id, not a path
+        return None
+    for root in [*sorted(records.ORCHESTRA_DIR.glob("*/sessions")), records.ORCHESTRA_DIR / "sessions"]:
+        if (root / session_id / "session.json").is_file():
+            return root
+    return None
 
 
 @dataclass(frozen=True)
 class TurnResult:
     answer: str
-    run_end: dict | None  # the trace's run_end: outcome and totals (steps, tool_calls, tokens, seconds)
+    summary: dict | None  # the trace's turn_end (outcome), plus totals: steps, tool_calls, tokens, seconds
 
 
 class Conversation:
@@ -50,14 +66,14 @@ class Conversation:
         """Run one turn. Its trace file is created first, so the turn counts even if it crashes.
 
         `on_event` is called with each trace event as it happens: how the interface shows
-        progress (the same events the trace file gets, nothing extra).
+        progress: the same events the trace file gets, plus the details the trace only
+        references (a tool_run event also carries the tool's name, arguments, and result).
         """
-        # creates this turn's trace file: sessions/<id>/turn-001.jsonl
+        # appends this turn to the session's trace: sessions/<id>/trace.jsonl
         listeners = [on_event] if on_event else []
-        with Tracer(self.session.trace_path(self.session.next_turn), listeners) as tracer:
+        with Tracer(self.session.trace_path, listeners, turn=self.session.next_turn) as tracer:
             answer = run_agent(task, self.session, self.agent, self.client, self.toolset, tracer)
-        last = tracer.events[-1] if tracer.events else None
-        return TurnResult(answer, last if last and last["event"] == "run_end" else None)
+        return TurnResult(answer, tracer.summary)
 
     def repair(self) -> None:
         """After a turn was interrupted: make the history valid to send again."""
@@ -67,6 +83,7 @@ class Conversation:
 def new_conversation(
     agent_name: str = "base",
     *,
+    app: str,
     project: Project | None = None,
     approver: Approver = deny_all,
     sandbox: Seatbelt | Unsandboxed | None = None,
@@ -74,6 +91,10 @@ def new_conversation(
     environment: str | None = None,
 ) -> Conversation:
     """Start a new session for `agent_name`, set its workspace up, and get it ready for turns.
+
+    `app`: who the session works for, e.g. "jewels" (orchestra's own: "orchestra-cli", "orchestra-<name>").
+    Required: the session is kept in ~/.orchestra/<app>/sessions/, and every model call it
+    makes is recorded under it (records.py).
 
     `approver`: how "ask" tools get answered. The default, deny_all, is the safe one: an
     interface that can ask a human passes its own (interfaces/cli.py passes terminal_approver).
@@ -88,8 +109,9 @@ def new_conversation(
     require_sandbox_for_auto_approval(approver, sandbox)
     project = project or Project.find(Path.cwd())
     rc = resolve_run_config(agent_name, project, workspace=workspace, environment=environment)
+    records.check_app(app)
     client = make_client()
-    session = start_session(rc, project)
+    session = start_session(rc, project, app)
     toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox, project)
     return Conversation(session, rc.agent, client, toolset)
 
@@ -113,7 +135,10 @@ def resume_conversation(
     """
     sandbox = sandbox or default_sandbox()
     require_sandbox_for_auto_approval(approver, sandbox)
-    session = Session.load(SESSIONS_DIR, session_id)  # also repairs an interrupted history
+    root = find_session(session_id)
+    if root is None:
+        raise ValueError(f"no session {session_id!r}")
+    session = Session.load(root, session_id)  # also repairs an interrupted history
     caller = project or Project.find(session.config_root or Path.cwd())
     project = Project(session.config_root or caller.root, caller.extra_tools)
     agent = resolve_agent(session.agent, project)
@@ -124,22 +149,23 @@ def resume_conversation(
 
 
 def session_exists(session_id: str) -> bool:
-    return (SESSIONS_DIR / session_id / "session.json").is_file()
+    return find_session(session_id) is not None
 
 
 def run(task: str, agent_name: str = "base", **options) -> str:
-    """One task as a new one-turn session; returns the answer. `options` as for new_conversation."""
+    """One task as a new one-turn session; returns the answer. `options` as for new_conversation
+    (`app` is required there, so here too)."""
     return new_conversation(agent_name, **options).turn(task).answer
 
 
-def start_session(rc: RunConfig, project: Project) -> Session:
+def start_session(rc: RunConfig, project: Project, app: str) -> Session:
     """Create a session for `rc` and set its workspace up. The system prompt is pinned here.
 
     If setup fails, the session is removed: one that never got set up has nothing worth keeping.
     """
     session = Session.create(
-        SESSIONS_DIR, rc.agent["name"], rc.system_prompt, agent_version(rc.agent), rc.workspace, rc.environment,
-        config_root=project.root,
+        sessions_dir(app), rc.agent["name"], rc.system_prompt, agent_version(rc.agent), rc.workspace, rc.environment,
+        config_root=project.root, app=app,
     )
     if rc.environment:
         try:

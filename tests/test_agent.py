@@ -10,6 +10,8 @@ from orchestra.session import MESSAGES_FILE, Session
 from orchestra.tools import ToolContext, Toolset
 from orchestra.tracer import Tracer
 from tests.fakes import NO_HUMAN, FakeClient, always, call, reply
+from tests.test_records import read_log
+from orchestra.provenance import agent_version
 
 CONFIG = {"model": "test-model", "temperature": 0.3, "max_steps": 5, "system_prompt": "You are a test agent."}
 
@@ -17,7 +19,7 @@ _sessions_root = None  # set per test by _setup below
 
 
 def new_session(system_prompt=CONFIG["system_prompt"]) -> Session:
-    return Session.create(_sessions_root, "test", system_prompt, "v")
+    return Session.create(_sessions_root, "test", system_prompt, "v", app="orchestra-test")
 
 
 def run(replies, task="do the thing", tools=("echo",), tracer=None, session=None, **config_overrides):
@@ -182,12 +184,12 @@ class TestNoOutput:
     def test_listeners_see_every_event_as_it_happens(self):
         seen = []
         run([reply(tool_calls=[call("echo", {"text": "hello"})]), reply("done")], tracer=Tracer(listeners=[seen.append]))
-        assert [e["event"] for e in seen] == ["run_start", "model_response", "tool_call", "model_response", "run_end"]
+        assert [e["event"] for e in seen] == ["turn_start", "model_call", "tool_run", "model_call", "turn_end"]
         assert seen[2]["result"] == "hello"
 
 
 class TestTracing:
-    """What run_agent records. Each run must produce: run_start, then per step a model_response
+    """What run_agent records. Each run must produce: run_start, then per step a model_call
     and one tool_call per call, then exactly one run_end with the outcome."""
 
     def kinds(self, tracer):
@@ -196,77 +198,100 @@ class TestTracing:
     def test_answer_only(self):
         tracer = Tracer()
         run([reply("done")], tracer=tracer)
-        assert self.kinds(tracer) == ["run_start", "model_response", "run_end"]
+        assert self.kinds(tracer) == ["turn_start", "model_call", "turn_end"]
 
     def test_tool_round_trip(self):
         tracer = Tracer()
         run([reply(tool_calls=[call("echo", {"text": "a"}), call("echo", {"text": "b"})]), reply("done")], tracer=tracer)
-        assert self.kinds(tracer) == ["run_start", "model_response", "tool_call", "tool_call", "model_response", "run_end"]
+        assert self.kinds(tracer) == ["turn_start", "model_call", "tool_run", "tool_run", "model_call", "turn_end"]
 
-    def test_run_start_records_the_setup(self):
+    def test_turn_start_records_the_setup(self, orchestra_dir):
         tracer = Tracer()
         run([reply("ok")], task="list files", tools=("echo", "count"), tracer=tracer)
         start = tracer.events[0]
         assert start["task"] == "list files"
-        assert start["config"]["model"] == "test-model"
-        assert start["config"]["system_prompt"] == "You are a test agent."
-        assert [t["function"]["name"] for t in start["tools"]] == ["echo", "count"]
+        assert start["agent_version"] == agent_version(CONFIG)
+        assert start["max_steps"] == 5
         assert start["approver"] == "deny_all"  # NO_HUMAN's approver: tells you if this was an unattended run
-        assert start["config"]["model"] == "test-model"  # the model asked for; provenance doesn't repeat it
+        assert start["sandbox"] == "none"
+        # the model, system prompt, and tools are in the model call's record, not copied here
+        (record,) = read_log(orchestra_dir, "orchestra-test")
+        assert record["request"]["model"] == "test-model"
+        assert record["request"]["messages"][0] == {"role": "system", "content": "You are a test agent."}
+        assert [t["function"]["name"] for t in record["request"]["tools"]] == ["echo", "count"]
 
-    def test_model_response_details(self):
-        tracer = Tracer()
+    def test_model_call_points_at_its_record(self, orchestra_dir):
+        # chat() records the whole call in the session's app's log; the trace only says which record.
+        tracer, session = Tracer(), new_session()
         usage = {"prompt_tokens": 120, "completion_tokens": 8, "total_tokens": 128}
-        run([reply("hi", reasoning="let me think", usage=usage)], tracer=tracer)
-        response = tracer.events[1]
-        assert response["step"] == 1
-        assert response["message"] == {"role": "assistant", "content": "hi"}
-        assert response["finish_reason"] == "stop"
-        assert response["model"] == "fake-model"  # what the server reported; compare with run_start.config.model
-        assert response["usage"]["prompt_tokens"] == 120
-        assert response["seconds"] >= 0
+        run([reply("hi", reasoning="let me think", usage=usage)], tracer=tracer, session=session)
+        event = tracer.events[1]
+        assert set(event) == {"event", "time", "step", "record"}
+        (record,) = read_log(orchestra_dir, "orchestra-test")
+        assert event["record"] == record["id"]
+        assert (record["session"], record["app"]) == (session.id, session.app)
+        assert record["request"]["model"] == "test-model"
+        assert record["response"]["content"] == "hi"
+        assert record["response"]["reasoning"] == "let me think"  # kept here, dropped from the conversation
+        assert record["usage"]["prompt"] == 120
 
-    def test_reasoning_is_kept_in_the_trace(self):
-        # Dropped from the conversation history (see TestToolRoundTrip), but the trace keeps it.
+    def test_tokens_add_up_over_the_turn(self):
         tracer = Tracer()
-        run([reply("hi", reasoning="let me think")], tracer=tracer)
-        response = tracer.events[1]
-        assert response["reasoning"] == "let me think"
-        assert "reasoning_content" not in response["message"]
+        usage = {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105, "prompt_tokens_details": {"cached_tokens": 60}}
+        run([reply(tool_calls=[call("echo", {"text": "a"})], usage=usage), reply("done", usage=usage)], tracer=tracer)
+        assert tracer.summary["tokens"] == {"prompt": 200, "completion": 10, "cached": 120}
 
-    def test_missing_usage_and_reasoning_are_none(self):
-        tracer = Tracer()
-        run([reply("hi")], tracer=tracer)
-        assert tracer.events[1]["usage"] is None
-        assert tracer.events[1]["reasoning"] is None
-
-    def test_tool_call_details(self):
-        tracer = Tracer()
-        run([reply(tool_calls=[call("echo", {"text": "hey"}, id="call_9")]), reply("done")], tracer=tracer)
-        tool = tracer.events[2]
-        assert (tool["step"], tool["id"], tool["name"]) == (1, "call_9", "echo")
-        assert tool["arguments"] == '{"text": "hey"}'  # the raw string, exactly as the model wrote it
+    def test_tool_run_points_at_its_record(self, orchestra_dir):
+        tracer, session = Tracer(), new_session()
+        run([reply(tool_calls=[call("echo", {"text": "hey"}, id="call_9")]), reply("done")], tracer=tracer, session=session)
+        event = tracer.events[2]
+        assert set(event) == {"event", "time", "step", "record"}  # a reference, no copies
+        asked, tool, answered = read_log(orchestra_dir, "orchestra-test")
+        assert [r["kind"] for r in (asked, tool, answered)] == ["chat", "tool", "chat"]
+        assert event["record"] == tool["id"]
+        assert (tool["parent"], tool["session"], tool["tool_call_id"]) == (asked["id"], session.id, "call_9")
         assert tool["result"] == "hey"
         assert tool["seconds"] >= 0
+        # the name and arguments live in the model call that asked for the tool, not in the tool record
+        (wanted,) = asked["response"]["tool_calls"]
+        assert (wanted["id"], wanted["function"]["name"]) == ("call_9", "echo")
+        assert "arguments" not in tool and "name" not in tool
 
-    def test_failed_tool_calls_are_traced_too(self):
-        tracer = Tracer()
-        run([reply(tool_calls=[call("echo", "{broken")]), reply("ok")], tracer=tracer)
-        assert tracer.events[2]["arguments"] == "{broken"
-        assert "not valid JSON" in tracer.events[2]["result"]
+    def test_listeners_get_tool_details_the_trace_doesnt_store(self):
+        seen = []
+        tracer = Tracer(listeners=[seen.append])
+        run([reply(tool_calls=[call("echo", {"text": "hey"})]), reply("done")], tracer=tracer)
+        shown, stored = seen[2], tracer.events[2]
+        assert (shown["name"], shown["arguments"], shown["result"]) == ("echo", '{"text": "hey"}', "hey")
+        assert "result" not in stored
+        assert shown["record"] == stored["record"]
+
+    def test_tool_records_say_who_approved(self, orchestra_dir):
+        # NO_HUMAN: "allow" tools run (auto-allow), "ask" tools are refused (auto-deny)
+        run([reply(tool_calls=[call("echo", {"text": "a"}), call("guarded", {"target": "x"})]), reply("ok")],
+            tools=("echo", "guarded"))
+        _, echo, guarded, _ = read_log(orchestra_dir, "orchestra-test")
+        assert (echo["approval"], guarded["approval"]) == ("auto-allow", "auto-deny")
+
+    def test_failed_tool_calls_are_recorded_too(self, orchestra_dir):
+        run([reply(tool_calls=[call("echo", "{broken")]), reply("ok")])
+        asked, tool, _ = read_log(orchestra_dir, "orchestra-test")
+        assert asked["response"]["tool_calls"][0]["function"]["arguments"] == "{broken"  # exactly as the model wrote it
+        assert "not valid JSON" in tool["result"]
+        assert tool["approval"] is None  # rejected before anyone was asked
 
     def test_run_end_answered(self):
         tracer = Tracer()
         run([reply(tool_calls=[call("echo", {"text": "a"})]), reply("final")], tracer=tracer)
         end = tracer.events[-1]
-        assert (end["outcome"], end["answer"], end["steps"]) == ("answered", "final", 2)
-        assert end["seconds"] >= 0
+        assert (end["event"], end["outcome"]) == ("turn_end", "answered")
+        assert "answer" not in end  # it's the last model call's response
+        assert (tracer.summary["steps"], tracer.summary["seconds"] >= 0) == (2, True)
 
     def test_run_end_max_steps(self):
         tracer = Tracer()
         run(always(lambda: reply(tool_calls=[call("echo", {"text": "x"})])), max_steps=2, tracer=tracer)
-        end = tracer.events[-1]
-        assert (end["outcome"], end["steps"]) == ("max_steps", 2)
+        assert (tracer.events[-1]["outcome"], tracer.summary["steps"]) == ("max_steps", 2)
 
     def test_crash_is_traced_then_reraised(self):
         # The model call blows up on step 2: the trace still ends with what happened.
@@ -275,12 +300,12 @@ class TestTracing:
             with Tracer() as tracer:
                 run([reply(tool_calls=[call("echo", {"text": "a"})])], tracer=tracer)
         end = tracer.events[-1]
-        assert end["event"] == "run_end"
+        assert end["event"] == "turn_end"
         assert end["outcome"] == "crashed"
         assert end["error"].startswith("AssertionError: model called more times")
         # steps = model responses actually received: step 1 completed, step 2 crashed before replying
-        assert end["steps"] == 1
-        assert sum(e["event"] == "model_response" for e in tracer.events) == end["steps"]
+        assert tracer.summary["steps"] == 1
+        assert sum(e["event"] == "model_call" for e in tracer.events) == tracer.summary["steps"]
 
     def test_interrupt_is_traced_then_reraised(self):
         def interrupting():
@@ -337,7 +362,7 @@ class TestSession:
 
 
 class TestTotals:
-    """run_end carries totals for the whole turn, so nothing has to recount the events."""
+    """The turn's totals: given live and in tracer.summary, not stored (they're sums over the records)."""
 
     def usage(self, prompt, completion, cached=0):
         return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion,
@@ -353,7 +378,7 @@ class TestTotals:
             ],
             tracer=tracer,
         )
-        end = tracer.events[-1]
+        end = tracer.summary
         assert end["steps"] == 3  # model calls
         assert end["tool_calls"] == 3  # two in one response, then one
         assert end["tokens"] == {"prompt": 430, "completion": 35, "cached": 250}
@@ -361,11 +386,11 @@ class TestTotals:
     def test_no_usage_reported(self):
         tracer = Tracer()
         run([reply("done")], tracer=tracer)
-        assert tracer.events[-1]["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
+        assert tracer.summary["tokens"] == {"prompt": 0, "completion": 0, "cached": 0}
 
     def test_totals_reset_per_run(self):
         tracer = Tracer()
         run([reply(tool_calls=[call("echo", {"text": "a"})], usage=self.usage(10, 1)), reply("x")], tracer=tracer)
         run([reply("y", usage=self.usage(5, 1))], tracer=tracer)
-        end = tracer.events[-1]
+        end = tracer.summary
         assert (end["steps"], end["tool_calls"], end["tokens"]["prompt"]) == (1, 0, 5)

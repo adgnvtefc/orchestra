@@ -17,12 +17,17 @@ from dotenv import load_dotenv
 
 from orchestra.config import Project, ProjectToolsError
 from orchestra.orchestrator import Conversation, new_conversation, resume_conversation, session_exists
-from orchestra.policy import approve_all, deny_all, require_sandbox_for_auto_approval
+from orchestra.policy import NobodyToAsk, approve_all, asks_human, deny_all, require_sandbox_for_auto_approval
 from orchestra.providers import MissingAPIKey
 from orchestra.sandbox import Unsandboxed, default_sandbox
 
+# Who the CLI's sessions work for: its sessions and model calls are kept under this app,
+# in ~/.orchestra/orchestra-cli/.
+APP = "orchestra-cli"
+
 
 # this approver is currently only called from within the policy class
+@asks_human
 def terminal_approver(name: str, arguments: dict) -> str | None:
     """Ask the human at the terminal. Only an explicit "y" approves.
 
@@ -36,8 +41,8 @@ def terminal_approver(name: str, arguments: dict) -> str | None:
     print("  allow? [y/N] ", end="", file=sys.stderr, flush=True)
     try:
         answer = input().strip().lower()
-    except EOFError:  # no terminal attached (e.g. piped input): same situation as unattended
-        return deny_all(name, arguments)
+    except EOFError:  # no terminal attached (e.g. piped input): nobody to ask, so Policy refuses as deny_all would
+        raise NobodyToAsk from None
     if answer == "y":
         return None
     return f"The user declined this {name} call. Try a different approach or ask the user."
@@ -47,23 +52,24 @@ def show_step(event: dict) -> None:
     """Print each tool call as it finishes: what the agent ran, and the start of what it got back.
     To stderr: progress, not the answer.
 
-    Listens to the turn's trace events (Conversation.turn's on_event); everything else
-    (model responses, run_start/run_end) isn't shown step by step.
+    Listens to the turn's trace events (Conversation.turn's on_event): a tool_run event
+    carries the name, arguments, and result live, though the trace file only references
+    the tool's record. Everything else (model calls, turn_start/turn_end) isn't shown step by step.
     """
-    if event["event"] != "tool_call":
+    if event["event"] != "tool_run":
         return
     print(f"[step {event['step']}] {event['name']}({event['arguments']})", file=sys.stderr)
     result = event["result"]
     print(f"  -> {result if len(result) <= 200 else result[:200] + '...'}", file=sys.stderr)
 
 
-def turn_summary(run_end: dict) -> str:
+def turn_summary(summary: dict) -> str:
     """One line about what a turn cost: (3 model calls · 2 tool calls · 1,904 prompt tokens, 0 cached · 4.2s)"""
-    parts = [_count(run_end["steps"], "model call"), _count(run_end["tool_calls"], "tool call")]
-    tokens = run_end["tokens"]
+    parts = [_count(summary["steps"], "model call"), _count(summary["tool_calls"], "tool call")]
+    tokens = summary["tokens"]
     if tokens["prompt"]:  # a server that reports no usage gets no token figures
         parts.append(f"{tokens['prompt']:,} prompt tokens, {tokens['cached']:,} cached")
-    parts.append(f"{run_end['seconds']:.1f}s")
+    parts.append(f"{summary['seconds']:.1f}s")
     return f"({' · '.join(parts)})"
 
 
@@ -103,8 +109,8 @@ def chat(conv: Conversation) -> None:
             conv.repair()
             print(f"\n(turn failed: {type(e).__name__}: {e})\n", file=sys.stderr)
             continue
-        if result.run_end:
-            print(turn_summary(result.run_end), file=sys.stderr)
+        if result.summary:
+            print(turn_summary(result.summary), file=sys.stderr)
         print(f"\n{result.answer}\n")
     print(f"Session saved. Continue it with: orchestra chat --resume {session.id}")
 
@@ -204,7 +210,7 @@ def main(argv: list[str] | None = None) -> None:
         if getattr(args, "resume", None):
             conv = resume_conversation(args.resume, approver=approver, sandbox=sandbox)  # per run, not fixed
         else:
-            conv = new_conversation(args.agent or "base", **new)
+            conv = new_conversation(args.agent or "base", app=APP, **new)
     except (MissingAPIKey, ProjectToolsError) as e:  # ProjectToolsError: a resumed session's project tools.py
         command.error(str(e))
 
@@ -214,9 +220,9 @@ def main(argv: list[str] | None = None) -> None:
         finally:
             # stderr, so stdout stays just the answer (useful when scripts capture it); printed
             # even after a crash, so you can find the trace
-            print(f"session: {conv.session.id}  trace: {conv.session.trace_path(1).name}", file=sys.stderr)
-        if result.run_end:
-            print(turn_summary(result.run_end), file=sys.stderr)
+            print(f"session: {conv.session.id}  trace: {conv.session.trace_path.name}", file=sys.stderr)
+        if result.summary:
+            print(turn_summary(result.summary), file=sys.stderr)
         print(result.answer)
         return
     chat(conv)

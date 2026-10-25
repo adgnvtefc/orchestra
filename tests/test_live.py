@@ -34,20 +34,34 @@ def require_server():
 def test_lists_empty_workspace():
     # environment="none": base's python-dev environment would put .venv/ and .orchestra/ in the
     # workspace, and an agent that runs `ls -la` would rightly say it isn't empty.
-    answer = orchestrator.run("What files are in the workspace? Answer briefly.", approver=approve_all, environment="none")
+    answer = orchestrator.run("What files are in the workspace? Answer briefly.", app="orchestra-test", approver=approve_all, environment="none")
     assert "empty" in answer.lower() or "no files" in answer.lower(), f"model's answer: {answer!r}"
 
 
 def test_writes_and_runs_a_script(sessions_dir):
-    answer = orchestrator.run("Write primes.py that prints the first 10 primes, run it, and tell me the output", approver=approve_all)
+    answer = orchestrator.run("Write primes.py that prints the first 10 primes, run it, and tell me the output", app="orchestra-test", approver=approve_all)
     (session,) = [p for p in sessions_dir.iterdir() if p.is_dir()]
     assert (session / "workspace" / "primes.py").is_file()
     assert "29" in answer  # the 10th prime
 
 
 def test_recovers_from_missing_file():
-    answer = orchestrator.run("Read notes.txt and summarize it", approver=approve_all)
+    answer = orchestrator.run("Read notes.txt and summarize it", app="orchestra-test", approver=approve_all)
     # The model may word it many ways; what matters is it reports the file as missing, not invented.
     missing = ("not found", "doesn't exist", "does not exist", "couldn't find", "could not find",
                "no such", "isn't", "is not", "wasn't", "no file", "not exist", "missing", "empty")
     assert any(phrase in answer.lower() for phrase in missing), f"model's answer: {answer!r}"
+
+
+def test_chat_records_a_real_call(orchestra_dir):
+    from orchestra import chat
+    from orchestra.config import load_agent_config
+    from tests.test_records import read_log
+
+    model = load_agent_config("agents/base.md")["model"]
+    result = chat(app="orchestra-test", model=model, metadata={"why": "live test"},
+                  messages=[{"role": "user", "content": "What is 6 times 7? Just the number."}])
+    assert "42" in result.content
+    (record,) = read_log(orchestra_dir, "orchestra-test")
+    assert record["response"]["content"] == result.content
+    assert record["usage"]["completion"] > 0

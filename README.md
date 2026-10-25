@@ -4,6 +4,10 @@ This is a learning project: an agent harness built from scratch, running local m
 Apple Silicon. It runs an agent loop (model ↔ tools) with sessions, traces, environments,
 and a macOS sandbox. For how it works inside, see [visual_representation.md](visual_representation.md).
 
+**Using orchestra from another project?** Read [docs/for-apps.md](docs/for-apps.md): how an
+app makes model calls through orchestra, and how they're recorded. Why records, sessions,
+and traces are split the way they are: [docs/decisions.md](docs/decisions.md).
+
 ## Requirements
 
 - **macOS** (the sandbox uses macOS's `sandbox-exec`; on other systems bash runs unsandboxed)
@@ -99,7 +103,7 @@ answer=$(uv run orchestra --yes "What is 17 * 23? Just the number." 2>/dev/null)
 - **stdout:** the final answer, and nothing else (so scripts can capture it).
 - **stderr:** each tool call as it finishes (`[step N] tool(args)` and the start of its
   result), a summary line per turn (`(3 model calls · 2 tool calls · 1,904 prompt tokens,
-  650 cached · 4.2s)`), and for one-off runs `session: <id>  trace: turn-001.jsonl`.
+  650 cached · 4.2s)`), and for one-off runs `session: <id>  trace: trace.jsonl`.
 - **Approval prompts** (without `--yes`/`--unattended`): bash asks `allow? [y/N]`. Only `y` approves.
 - **In chat:** `/exit`, Ctrl-D, or Ctrl-C at the prompt leaves and prints the resume command.
   Ctrl-C *during* a turn stops only that turn.
@@ -194,22 +198,59 @@ TOOLS = [Tool(fn=stock_price, permission="allow", schema={"type": "function", "f
 
 ## Where things go
 
-Sessions live in `~/.orchestra/sessions/` (also reachable as `~/projects/orchestra-sessions`),
-deliberately outside this project:
+Everything orchestra keeps is in `~/.orchestra/`, one folder per app, deliberately outside
+this project. The `orchestra` command is the app `orchestra-cli`:
 
 ```text
-~/.orchestra/sessions/2026-10-21T18-55-51_base_66ec/
-  session.json       id, agent, agent version, workspace, environment, created
+~/.orchestra/
+  orchestra-cli/
+    log/2026-10-24.jsonl          one record per model call and tool run (below)
+    sessions/<id>/                the command's sessions
+  jewels/
+    log/  sessions/               another app's
+  sessions/                       sessions from before they were grouped by app (still resumable)
+```
+
+A session:
+
+```text
+~/.orchestra/orchestra-cli/sessions/2026-10-21T18-55-51_base_66ec/
+  session.json       id, app, agent, agent version, workspace, environment, created
   messages.jsonl     the conversation: exactly what the model sees each turn
-  turn-001.jsonl     the trace of turn 1: every model call and tool call, with timings and tokens
-  turn-002.jsonl     ...
+  trace.jsonl        the session's history: each turn's start and end, and the ids of its
+                     model-call and tool-run records, in order
   workspace/         where the agent works (unless --workspace / workspace: chose another folder)
 ```
 
-Each trace's first line records what produced it: the agent version (a hash of its
-config), which orchestra code ran (its version, how it was installed, and its git commit when
-knowable: exact for a source checkout or a git install), the approver,
-and the sandbox.
+Each turn's `turn_start` records the task, the agent version (a hash of its config), the
+approver, and the sandbox. The model calls and tool runs themselves are records in
+`~/.orchestra/<app>/log/`: each holds which orchestra code ran (its version, how it was
+installed, and its git commit when knowable), and each tool record says who approved it
+(`auto-allow`, `auto-deny`, `human-allow`, `human-deny`).
+
+## Recorded model calls, from any app
+
+An app that just needs a model call (no agent, no session) uses `chat()`. Every call is
+recorded, in the same function that makes it:
+
+```python
+from orchestra import chat
+
+reply = chat(
+    app="jewels",                                  # required: who's calling (orchestra's own: "orchestra-<name>")
+    model="Qwen3.8-27B-MLX-8bit",                  # required
+    messages=[{"role": "user", "content": "something cozy for autumn"}],   # required
+    temperature=0.4,                               # optional: temperature, max_tokens, tools
+    metadata={"job": job_id},                      # optional: any JSON-storable dict, kept as given
+)
+reply.content, reply.reasoning, reply.tool_calls, reply.usage, reply.id
+```
+
+Each call becomes one line in `~/.orchestra/<app>/log/<day>.jsonl`: the full request,
+the full response (reasoning included), token usage, timing, your `metadata`, and which
+orchestra code ran. A failed call is recorded with its error, then raised. The record
+format is described in `src/orchestra/records.py`. Agents' calls are recorded the same way,
+under the app passed to `new_conversation`. The full guide for apps: [docs/for-apps.md](docs/for-apps.md).
 
 ## Using it from Python, with your own tools
 
@@ -242,6 +283,7 @@ project = Project.find(Path.cwd(), extra_tools=[WEATHER])
 
 conv = new_conversation(
     "forecaster",                         # agents/forecaster.md, with `tools: [weather]`
+    app="weather-app",                    # required: who this is for; its model calls are recorded under it
     project=project,                      # optional: default is Project.find(Path.cwd())
     approver=approve_all,                 # optional: default is deny_all; approve_all needs the sandbox (on by default)
 )
