@@ -4,6 +4,7 @@ import pytest
 
 import json
 
+from orchestra.providers import omlx
 from orchestra.sandbox import Unsandboxed
 from orchestra.agent import run_agent
 from orchestra.session import MESSAGES_FILE, Session
@@ -29,11 +30,11 @@ def run(replies, task="do the thing", tools=("echo",), tracer=None, session=None
     each call gets a fresh session.
     """
     client = FakeClient(replies)
+    omlx.client = lambda: client  # oMLX's client for this test; conftest's no_model_client puts the real one back
     answer = run_agent(
         task,
         session or new_session(),
         {**CONFIG, **config_overrides},
-        client,
         Toolset(list(tools), NO_HUMAN, ToolContext(workspace=_sessions_root.parent / "workspace", sandbox=Unsandboxed())),
         tracer or Tracer(),
     )

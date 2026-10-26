@@ -1,5 +1,6 @@
-"""providers/: reaching the model server. make_client() builds the client; send() makes one call
-and translates the answer into plain dicts (calls.chat() records it)."""
+"""providers/: reaching the model server. make_client() builds a client, client() is the one
+every call uses, and send() makes one call and translates the answer into plain dicts
+(calls.chat() records it)."""
 
 import pytest
 
@@ -50,17 +51,44 @@ class TestMakeClient:
         assert omlx.make_client().timeout == 600
 
 
+class TestClient:
+    def test_made_once_then_reused(self, env):
+        env.setenv("OMLX_API_KEY", "test-key")
+        first = omlx.client()
+        assert omlx.client() is first  # one client, so calls share its connections
+
+    def test_a_missing_key_is_not_cached(self, env):
+        with pytest.raises(MissingAPIKey):
+            omlx.client()
+        env.setenv("OMLX_API_KEY", "test-key")  # setting the key later works
+        assert omlx.client().api_key == "test-key"
+
+    def test_a_missing_key_fails_before_a_session_exists(self, env, tmp_path, monkeypatch, sessions_dir):
+        from orchestra import orchestrator
+        (tmp_path / "agents").mkdir()
+        (tmp_path / "agents" / "base.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\n---\nPrompt.\n")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(MissingAPIKey):
+            orchestrator.new_conversation("base", app="orchestra-test")
+        assert not sessions_dir.exists()
+
+
 class TestSend:
     REQUEST = {"model": "m", "messages": [{"role": "user", "content": "x"}], "temperature": 0.5}
 
+    def send(self, client):
+        """send(), with `client` (a scripted FakeClient) as oMLX's client."""
+        omlx.client = lambda: client  # the autouse no_model_client fixture puts the real one back afterwards
+        return omlx.send(self.REQUEST)
+
     def test_sends_the_request_exactly_as_given(self):
         client = FakeClient([reply("hi")])
-        omlx.send(client, self.REQUEST)
+        self.send(client)
         assert client.requests == [self.REQUEST]
 
     def test_answer_as_a_plain_dict(self):
         usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25, "prompt_tokens_details": {"cached_tokens": 12}}
-        answer = omlx.send(FakeClient([reply("42", reasoning="6*7", usage=usage)]), self.REQUEST)
+        answer = self.send(FakeClient([reply("42", reasoning="6*7", usage=usage)]))
         assert answer == {
             "content": "42", "reasoning": "6*7", "tool_calls": [], "finish_reason": "stop", "model": "fake-model",
             "usage": {"prompt": 20, "completion": 5, "cached": 12},
@@ -70,19 +98,19 @@ class TestSend:
 
     def test_tool_calls_are_plain_dicts(self):
         wanted = call("bash", {"command": "ls"}, id="call_1")
-        answer = omlx.send(FakeClient([reply(tool_calls=[wanted])]), self.REQUEST)
+        answer = self.send(FakeClient([reply(tool_calls=[wanted])]))
         assert (answer["tool_calls"], answer["finish_reason"]) == ([wanted], "tool_calls")
 
     def test_no_usage_or_reasoning_reported(self):
-        answer = omlx.send(FakeClient([reply("hi")]), self.REQUEST)
+        answer = self.send(FakeClient([reply("hi")]))
         assert (answer["usage"], answer["server_usage"], answer["reasoning"]) == (
             {"prompt": 0, "completion": 0, "cached": 0}, None, None)
 
     def test_usage_without_cache_details(self):
         usage = {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
-        assert omlx.send(FakeClient([reply("hi", usage=usage)]), self.REQUEST)["usage"] == {"prompt": 3, "completion": 1, "cached": 0}
+        assert self.send(FakeClient([reply("hi", usage=usage)]))["usage"] == {"prompt": 3, "completion": 1, "cached": 0}
 
     def test_server_errors_are_raised(self):
         with pytest.raises(ConnectionError):
-            omlx.send(FakeClient([ConnectionError("gone")]), self.REQUEST)
+            self.send(FakeClient([ConnectionError("gone")]))
 

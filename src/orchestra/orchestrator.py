@@ -11,8 +11,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from openai import OpenAI
-
 from orchestra import records
 from orchestra.agent import run_agent
 from orchestra.config import Project, RunConfig, resolve_agent, resolve_run_config
@@ -20,7 +18,7 @@ from orchestra.environment import provision
 from orchestra.policy import Approver, Policy, deny_all, require_sandbox_for_auto_approval
 from orchestra.provenance import agent_version
 from orchestra.sandbox import Seatbelt, Unsandboxed, default_sandbox
-from orchestra.providers import make_client
+from orchestra.providers import omlx
 from orchestra.session import Session
 from orchestra.tools import ToolContext, Toolset
 from orchestra.tracer import Tracer
@@ -56,10 +54,9 @@ class TurnResult:
 class Conversation:
     """A session plus everything its turns need. What an interface talks to."""
 
-    def __init__(self, session: Session, agent: dict, client: OpenAI, toolset: Toolset):
+    def __init__(self, session: Session, agent: dict, toolset: Toolset):
         self.session = session
         self.agent = agent  # the resolved agent config each turn runs with
-        self.client = client
         self.toolset = toolset
 
     def turn(self, task: str, on_event: Callable[[dict], None] | None = None) -> TurnResult:
@@ -72,7 +69,7 @@ class Conversation:
         # appends this turn to the session's trace: sessions/<id>/trace.jsonl
         listeners = [on_event] if on_event else []
         with Tracer(self.session.trace_path, listeners, turn=self.session.next_turn) as tracer:
-            answer = run_agent(task, self.session, self.agent, self.client, self.toolset, tracer)
+            answer = run_agent(task, self.session, self.agent, self.toolset, tracer)
         return TurnResult(answer, tracer.summary)
 
     def repair(self) -> None:
@@ -110,10 +107,10 @@ def new_conversation(
     project = project or Project.find(Path.cwd())
     rc = resolve_run_config(agent_name, project, workspace=workspace, environment=environment)
     records.check_app(app)
-    client = make_client()
+    omlx.client()  # a missing API key fails here, before a session is created (oMLX: the only provider)
     session = start_session(rc, project, app)
     toolset = build_toolset(session, rc.agent.get("tools", []), approver, sandbox, project)
-    return Conversation(session, rc.agent, client, toolset)
+    return Conversation(session, rc.agent, toolset)
 
 
 def resume_conversation(
@@ -143,9 +140,9 @@ def resume_conversation(
     project = Project(session.config_root or caller.root, caller.extra_tools)
     agent = resolve_agent(session.agent, project)
     agent["environment"] = session.environment  # what the workspace was set up with, not today's file
-    client = make_client()
+    omlx.client()  # a missing API key fails here, before any turn runs
     toolset = build_toolset(session, agent.get("tools", []), approver, sandbox, project)
-    return Conversation(session, agent, client, toolset)
+    return Conversation(session, agent, toolset)
 
 
 def session_exists(session_id: str) -> bool:

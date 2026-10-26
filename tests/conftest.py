@@ -2,7 +2,8 @@
 
 import pytest
 
-from orchestra import orchestrator, records
+from orchestra import records
+from orchestra.providers import omlx
 from orchestra.sandbox import Unsandboxed
 from orchestra.tools import REGISTRY, Tool, ToolContext
 
@@ -33,6 +34,18 @@ def orchestra_dir(tmp_path, monkeypatch):
     directory = tmp_path / "orchestra"
     monkeypatch.setattr(records, "ORCHESTRA_DIR", directory)
     return directory
+
+
+@pytest.fixture(autouse=True)
+def no_model_client(monkeypatch):
+    """Every test (autouse) starts with no oMLX client made yet, and gets the real omlx.client
+    back afterwards. A test that needs a model scripts one with fakes.use_model(...); without
+    that, a model call needs OMLX_API_KEY, which tests never load."""
+    real = omlx.client
+    real.cache_clear()
+    monkeypatch.setattr(omlx, "client", real)  # undone after the test, whatever replaced it
+    yield
+    real.cache_clear()
 
 
 @pytest.fixture

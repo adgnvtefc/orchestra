@@ -1,4 +1,4 @@
-"""The orchestrator: building the client, wiring config -> toolset -> agent, and the CLI."""
+"""The orchestrator: wiring config -> session -> toolset -> agent, and the CLI."""
 
 import json
 import re
@@ -11,7 +11,7 @@ from orchestra.config import Project
 from orchestra.policy import deny_all
 from orchestra.tools import Toolset
 from tests.test_records import read_log
-from tests.fakes import FakeClient, always, reply
+from tests.fakes import FakeClient, always, reply, use_model
 
 YES = lambda name, arguments: None  # an approver that approves everything (tests only)
 
@@ -32,26 +32,25 @@ def write_agent(directory, name, tools=None, prompt="Test prompt."):
 
 @pytest.fixture
 def captured_run(monkeypatch):
-    """Replace make_client and run_agent; record what the orchestrator hands the agent."""
+    """Replace the model and run_agent; record what the orchestrator hands the agent."""
     seen = {}
 
-    def fake_run_agent(task, session, config, client, toolset, tracer):
-        seen.update(task=task, session=session, config=config, client=client, toolset=toolset, tracer=tracer)
+    def fake_run_agent(task, session, config, toolset, tracer):
+        seen.update(task=task, session=session, config=config, toolset=toolset, tracer=tracer)
         return "agent result"
 
-    monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("unused")]))
+    use_model(monkeypatch, FakeClient([reply("unused")]))
     monkeypatch.setattr(orchestrator, "run_agent", fake_run_agent)
     return seen
 
 
 class TestRun:
-    def test_wires_config_client_and_toolset(self, agents_dir, captured_run):
+    def test_wires_config_and_toolset(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", tools=["read_file", "bash"])
         assert orchestrator.run("a task", app="orchestra-test") == "agent result"
         assert captured_run["task"] == "a task"
         assert captured_run["config"]["model"] == "m"
         assert captured_run["config"]["system_prompt"] == "Test prompt."
-        assert isinstance(captured_run["client"], FakeClient)
         assert isinstance(captured_run["toolset"], Toolset)
         assert list(captured_run["toolset"].tools) == ["read_file", "bash"]
         assert captured_run["toolset"].policy.approver is deny_all  # safe default: nobody to ask
@@ -99,7 +98,7 @@ class TestRun:
         # Not mocking run_agent: the real loop runs, only the model is scripted.
         write_agent(agents_dir, "base", tools=["read_file"])
         client = FakeClient([reply("hello from the fake model")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         assert orchestrator.run("say hi", app="orchestra-test") == "hello from the fake model"
         assert client.requests[0]["messages"][0]["content"] == "Test prompt."
 
@@ -110,7 +109,7 @@ class TestSessionsAndTraces:
     @pytest.fixture
     def fake_model(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base", tools=["read_file"], prompt="Pinned prompt.")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("the answer")]))
+        use_model(monkeypatch, FakeClient([reply("the answer")]))
 
     def session_dirs(self, sessions_dir):
         return sorted(p for p in sessions_dir.iterdir() if p.is_dir())
@@ -120,7 +119,7 @@ class TestSessionsAndTraces:
 
     def test_each_run_is_a_new_session(self, fake_model, sessions_dir, monkeypatch):
         orchestrator.run("t", app="orchestra-test")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("again")]))
+        use_model(monkeypatch, FakeClient([reply("again")]))
         orchestrator.run("t", app="orchestra-test")
         assert len(self.session_dirs(sessions_dir)) == 2
 
@@ -166,7 +165,7 @@ class TestSessionsAndTraces:
 
     def test_crashed_run_still_leaves_session_and_trace(self, agents_dir, sessions_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # first model call fails
+        use_model(monkeypatch, FakeClient([]))  # first model call fails
         with pytest.raises(AssertionError):
             orchestrator.run("t", app="orchestra-test")
         (session,) = self.session_dirs(sessions_dir)
@@ -187,7 +186,7 @@ class TestWorkspaces:
                 f"---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - write_file\n{workspace_line}---\nPrompt.\n"
             )
             replies = [reply(tool_calls=[call("write_file", {"path": "marker.txt", "content": "hi"})]), reply("done")]
-            monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(replies))
+            use_model(monkeypatch, FakeClient(replies))
 
         return install
 
@@ -260,7 +259,7 @@ class TestEnvironments:
             )
             replies = replies or [reply(tool_calls=[call("bash", {"command": 'echo "[$GREETING]"'})]), reply("done")]
             client = FakeClient(replies)
-            monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+            use_model(monkeypatch, client)
             return client
 
         install.envs = envs
@@ -341,14 +340,14 @@ class TestConversation:
 
     def test_turn_returns_answer_and_totals(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         result = orchestrator.new_conversation("base", app="orchestra-test").turn("t")
         assert result.answer == "hi"
         assert (result.summary["event"], result.summary["steps"]) == ("turn_end", 1)
 
     def test_turn_passes_events_to_the_interface(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         seen = []
         orchestrator.new_conversation("base", app="orchestra-test").turn("t", on_event=seen.append)
         assert [e["event"] for e in seen] == ["turn_start", "model_call", "turn_end"]
@@ -356,7 +355,7 @@ class TestConversation:
     def test_sandboxed_by_default(self, agents_dir, monkeypatch):
         from orchestra.sandbox import default_sandbox
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         conv = orchestrator.new_conversation("base", app="orchestra-test")
         assert conv.toolset.context.sandbox == default_sandbox()
         conv.turn("t")
@@ -368,7 +367,7 @@ class TestConversation:
         from orchestra.policy import approve_all
         from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         existing = orchestrator.new_conversation("base", app="orchestra-test").session.id if start == "resume" else None
         before = sorted(sessions_dir.iterdir()) if sessions_dir.exists() else []
         with pytest.raises(ValueError, match="needs the sandbox"):
@@ -386,7 +385,7 @@ class TestConversation:
         (tmp_path / "environments").mkdir()
         (tmp_path / "environments" / "net.yaml").write_text("sandbox:\n  readable: [/opt/x]\n  network: true\n")
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))
+        use_model(monkeypatch, FakeClient([]))
         conv = orchestrator.new_conversation("base", app="orchestra-test", environment="net", sandbox=Seatbelt())
         sandbox = conv.toolset.context.sandbox
         assert (sandbox.network, sandbox.readable) == (True, (Path("/opt/x"),))  # the interface's Seatbelt + the env's rules
@@ -394,13 +393,13 @@ class TestConversation:
     def test_sandbox_is_passed_through(self, agents_dir, monkeypatch):
         from orchestra.sandbox import Unsandboxed
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         assert orchestrator.new_conversation("base", app="orchestra-test", sandbox=Unsandboxed()).toolset.context.sandbox == Unsandboxed()
 
     def test_turns_share_the_session(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
         client = FakeClient([reply("one"), reply("two")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         conv = orchestrator.new_conversation("base", app="orchestra-test")
         conv.turn("first")
         conv.turn("second")
@@ -409,10 +408,10 @@ class TestConversation:
 
     def test_calls_are_recorded_under_the_app(self, agents_dir, monkeypatch, orchestra_dir):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one"), reply("two")]))
+        use_model(monkeypatch, FakeClient([reply("one"), reply("two")]))
         conv = orchestrator.new_conversation("base", app="jewels")
         conv.turn("first")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        use_model(monkeypatch, FakeClient([reply("two")]))
         orchestrator.resume_conversation(conv.session.id).turn("second")  # a resumed session keeps its app
         calls = read_log(orchestra_dir, "jewels")
         assert [c["response"]["content"] for c in calls] == ["one", "two"]
@@ -426,11 +425,11 @@ class TestConversation:
 
     def test_resume(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
+        use_model(monkeypatch, FakeClient([reply("one")]))
         first = orchestrator.new_conversation("base", app="orchestra-test")
         first.turn("first")
         assert orchestrator.session_exists(first.session.id)
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        use_model(monkeypatch, FakeClient([reply("two")]))
         again = orchestrator.resume_conversation(first.session.id)
         assert again.session.dir == first.session.dir
         assert again.turn("second").answer == "two"
@@ -471,7 +470,7 @@ class TestLibraryUse:
                   "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}
         (agents_dir / "forecaster.md").write_text("---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - weather\n---\nP\n")
         client = FakeClient([reply(tool_calls=[call("weather", {"city": "Paris"})]), reply("It's sunny.")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         project = Project.find(agents_dir, [Tool(fn=weather, schema=schema, permission="allow")])
         conv = orchestrator.new_conversation("forecaster", app="orchestra-test", project=project)
         assert conv.turn("weather in Paris?").answer == "It's sunny."
@@ -484,26 +483,26 @@ class TestLibraryUse:
         write_agent(project / "agents", "base", prompt="Other project's agent.")
         monkeypatch.chdir(tmp_path)  # tmp_path itself has no agents/
         client = FakeClient([reply("hi")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         orchestrator.new_conversation("base", app="orchestra-test", project=Project(project)).turn("t")
         assert client.requests[0]["messages"][0]["content"] == "Other project's agent."
 
     def test_session_records_its_config_root(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("hi")]))
+        use_model(monkeypatch, FakeClient([reply("hi")]))
         conv = orchestrator.new_conversation("base", app="orchestra-test")
         assert conv.session.config_root == agents_dir.parent.resolve()
 
     def test_resume_reads_the_sessions_own_agent_file(self, agents_dir, tmp_path, monkeypatch):
         write_agent(agents_dir, "base", tools=["read_file"])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("one")]))
+        use_model(monkeypatch, FakeClient([reply("one")]))
         first = orchestrator.new_conversation("base", app="orchestra-test")
         first.turn("t")
         elsewhere = tmp_path / "elsewhere"
         (elsewhere / "agents").mkdir(parents=True)
         write_agent(elsewhere / "agents", "base", tools=["bash"])  # a different "base"
         monkeypatch.chdir(elsewhere)
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("two")]))
+        use_model(monkeypatch, FakeClient([reply("two")]))
         again = orchestrator.resume_conversation(first.session.id)
         assert list(again.toolset.tools) == ["read_file"]  # the original project's agent, not the nearby one
 
@@ -514,7 +513,7 @@ class TestWhereSessionsLive:
     @pytest.fixture
     def answers(self, agents_dir, monkeypatch):
         write_agent(agents_dir, "base")
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(always(lambda: reply("ok"))))
+        use_model(monkeypatch, FakeClient(always(lambda: reply("ok"))))
 
     def test_in_the_apps_folder(self, answers, orchestra_dir):
         conv = orchestrator.new_conversation("base", app="jewels")

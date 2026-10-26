@@ -1,14 +1,15 @@
 """oMLX: a local MLX model server that speaks the OpenAI chat-completions API.
 
-Everything that knows how to talk to the model server lives here: building the client
-(URL, API key, timeout), sending one request, and reading the response (including
-oMLX's extra `reasoning_content`). The rest of orchestra calls these two functions and
-gets plain dicts back, never the openai SDK's types. Recording the call is calls.chat()'s job.
+Everything that knows how to talk to the model server lives here: the client (URL,
+API key, timeout), sending one request, and reading the response (including oMLX's
+extra `reasoning_content`). The rest of orchestra never sees a client or the openai
+SDK's types: it calls send() and gets plain dicts back. Recording the call is calls.chat()'s job.
 
-(A second provider, e.g. Anthropic's native API, would be a module here with the same two
+(A second provider, e.g. Anthropic's native API, would be a module here with the same
 functions returning the same dict.)
 """
 
+import functools
 import os
 
 from openai import OpenAI
@@ -36,7 +37,18 @@ def make_client() -> OpenAI:
     )
 
 
-def send(client: OpenAI, request: dict) -> dict:
+@functools.cache  # made on first use, then the same client every time: calls share its connections
+def client() -> OpenAI:
+    """oMLX's client, the one every oMLX call uses. Made from the environment on first use.
+
+    Raises MissingAPIKey if the key isn't set (and caches nothing, so setting it later
+    works), which makes calling this the way to check, before doing anything else, that
+    calls will be able to go out. Tests replace it with a scripted fake.
+    """
+    return make_client()
+
+
+def send(request: dict) -> dict:
     """Send one chat request; return the answer as a plain dict:
 
         content, reasoning, tool_calls ([{"id", "type", "function": {"name", "arguments"}}], or []),
@@ -60,7 +72,7 @@ def send(client: OpenAI, request: dict) -> dict:
     #     ],
     #     "temperature": 0.6                      randomness; lower = more consistent tool calls
     #   }
-    response = client.chat.completions.create(**request)
+    response = client().chat.completions.create(**request)
 
     # The response JSON looks like
     #   {

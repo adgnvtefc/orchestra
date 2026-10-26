@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-24, everything grouped by app in ~/.orchestra/<app>/; one trace per session; tool records say who approved
+**Last updated:** 2026-10-26, only the provider holds a model client; nothing passes one around
 
 ---
 
@@ -39,7 +39,6 @@ flowchart TD
     subgraph built["Built fresh for each run"]
         direction LR
         cfg["config dict"]
-        client["OpenAI client"]
         policy["Policy<br/>uses the approver the<br/>interface handed in"]
         toolset["Toolset<br/>only the tools this agent lists"]
         session["Session<br/>owns the conversation;<br/>system prompt pinned at creation"]
@@ -101,7 +100,7 @@ sequenceDiagram
     O->>S: Session.create: new folder,<br/>system prompt (+ environment prompt) = message 0
     O->>O: provision: run the environment's setup in the workspace<br/>(fails: the session is removed)
     O->>R: Tracer(session.trace_path, turn=next turn)<br/>appends to the session's trace.jsonl
-    O->>A: run_agent(task, session, config, client, toolset, tracer)
+    O->>A: run_agent(task, session, config, toolset, tracer)
     A->>R: start: turn_start (turn, task, agent_version,<br/>max_steps, approver, sandbox)
     A->>S: append {user: task}
 
@@ -427,7 +426,7 @@ src/orchestra/
   agent.py                      the loop
   calls.py                      chat(): one model call for any app, made and recorded
   records.py                    the record format, the only writer of <app>/log/, and app_dir()
-  providers/    omlx.py         the model server: make_client, send (the only code that knows oMLX's responses)
+  providers/    omlx.py         the model server: client (cached), send (the only code that has a client or knows oMLX's responses)
   tools/        base.py, toolset.py, builtin/{fs,shell}.py
   policy.py  config.py  environment.py  session.py  tracer.py  provenance.py  sandbox.py
 ```
@@ -441,7 +440,7 @@ flowchart TD
     climod["interfaces/cli.py<br/>terminal interface:<br/>commands, chat loop, y/N prompt"] --> orch
     orch["orchestrator.py<br/>control plane: Conversation,<br/>no terminal I/O"] --> agent["agent.py<br/>the loop"]
     orch --> loader["config.py<br/>Project (root + its tools); reads + resolves<br/>agents/ and environments/ into a RunConfig"]
-    orch --> providers["providers/omlx.py<br/>make_client, send"]
+    orch --> providers["providers/omlx.py<br/>client (cached; key check), send"]
     base --> sandboxmod["sandbox.py<br/>Seatbelt: confine bash"]
     agent --> calls
     loader --> envmod

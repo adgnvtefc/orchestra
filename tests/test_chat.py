@@ -8,7 +8,7 @@ from orchestra import config, orchestrator
 from orchestra.interfaces import cli
 from orchestra.session import INTERRUPTED
 from orchestra.tools import REGISTRY, Tool
-from tests.fakes import FakeClient, call, reply
+from tests.fakes import FakeClient, call, reply, use_model
 from tests.test_records import read_log
 
 
@@ -38,7 +38,7 @@ def model(monkeypatch):
 
     def install(*replies):
         client = FakeClient(list(replies))
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         return client
 
     return install

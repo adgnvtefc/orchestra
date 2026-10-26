@@ -15,13 +15,9 @@ look like, is the provider's (providers/omlx.py).
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from orchestra import records
-from orchestra.providers import make_client, send
-
-if TYPE_CHECKING:  # only for the `client` type hint; never imported at runtime
-    from openai import OpenAI
+from orchestra.providers import send
 
 
 @dataclass(frozen=True)
@@ -54,12 +50,11 @@ class Reply:
 
 def chat(*, app: str, model: str, messages: Sequence[dict], temperature: float | None = None,
          max_tokens: int | None = None, tools: list[dict] | None = None, metadata: dict | None = None,
-         parent: str | None = None, session: str | None = None, client: "OpenAI | None" = None) -> Reply:
+         parent: str | None = None, session: str | None = None) -> Reply:
     """Send `messages` to `model`, record the call under `app`, and return the reply.
 
     `metadata` is yours: any JSON-storable dict, kept with the record and never read here.
-    `parent`/`session` link the record to whatever caused it (records.py). `client` is for
-    reusing one, or for tests; by default one is made from the environment (make_client).
+    `parent`/`session` link the record to whatever caused it (records.py).
 
     A failed call is recorded too, with its error, and then raised.
     """
@@ -76,7 +71,7 @@ def chat(*, app: str, model: str, messages: Sequence[dict], temperature: float |
 
     started = time.monotonic()
     try:
-        answer = send(client or make_client(), request)
+        answer = send(request)
     except BaseException as error:  # Ctrl-C included: an interrupted call is still a call
         record["seconds"] = _since(started)
         record["error"] = f"{type(error).__name__}: {error}"

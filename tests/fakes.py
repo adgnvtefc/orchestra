@@ -11,6 +11,7 @@ import json
 from openai.types.chat import ChatCompletion
 
 from orchestra.policy import Policy, deny_all
+from orchestra.providers import omlx
 
 _ids = itertools.count(1)
 
@@ -80,6 +81,12 @@ class FakeClient:
         if isinstance(item, BaseException):  # script a failure, e.g. the server going away
             raise item
         return item
+
+
+def use_model(monkeypatch, fake: "FakeClient") -> "FakeClient":
+    """Make `fake` the client every model call uses, for this test. Returns it."""
+    monkeypatch.setattr(omlx, "client", lambda: fake)
+    return fake
 
 
 def always(response_factory):

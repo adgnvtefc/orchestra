@@ -2,8 +2,6 @@
 
 import time
 
-from openai import OpenAI
-
 from orchestra import records
 from orchestra.calls import chat
 from orchestra.session import Session
@@ -11,18 +9,18 @@ from orchestra.tools import Toolset
 from orchestra.tracer import Tracer
 
 
-# PROVIDER-SPECIFIC: oMLX/Qwen puts thinking in `reasoning_content`; Reply.message drops it
-# (a cache optimization). Anthropic's native API requires thinking blocks to be sent back. Fix later.
-def run_agent(task: str, session: Session, config: dict, client: OpenAI, toolset: Toolset, tracer: Tracer) -> str:
+# Reply.message leaves the model's reasoning out of the conversation (a cache optimization).
+# Anthropic's native API requires thinking blocks to be sent back: revisit with a second provider.
+def run_agent(task: str, session: Session, config: dict, toolset: Toolset, tracer: Tracer) -> str:
     """Run one turn: add `task` to the session, loop until the model answers without
     calling a tool, or max_steps runs out.
 
     `session` owns the conversation: earlier turns are already in it (its system prompt
     is message 0), and everything this turn adds goes through session.append(), which
-    also saves it. `config` comes from config.load_agent_config; `client` from
-    make_client; `toolset` holds only the tools this agent's config lists; `tracer`
-    records the turn. The agent is handed everything it needs and never goes looking
-    for settings itself.
+    also saves it. `config` comes from config.load_agent_config; `toolset` holds only
+    the tools this agent's config lists; `tracer` records the turn. The agent is handed
+    everything it needs and never goes looking for settings itself. (Reaching the model
+    is chat()'s business, and the provider's: the loop never sees a client.)
 
     Return the model's final text answer. Nothing is printed here: everything that
     happens is reported to the tracer, and interfaces show it by listening to that.
@@ -42,7 +40,7 @@ def run_agent(task: str, session: Session, config: dict, client: OpenAI, toolset
         # One model call, made and recorded by chat(): the full request and response go to
         # the session's app's log. The trace only notes which record it was.
         reply = chat(app=session.app, model=config["model"], messages=session.messages,
-                     temperature=config["temperature"], tools=tools, session=session.id, client=client)
+                     temperature=config["temperature"], tools=tools, session=session.id)
         tracer.model_call(step, reply)
 
         # Append the assistant turn, tool_calls and their ids included, so the tool results

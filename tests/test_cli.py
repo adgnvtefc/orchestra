@@ -8,7 +8,7 @@ from orchestra.config import Project
 from orchestra.policy import Decision, NobodyToAsk, Policy, approve_all, deny_all
 from orchestra.tools import REGISTRY
 from orchestra.sandbox import Unsandboxed, default_sandbox
-from tests.fakes import FakeClient, reply
+from tests.fakes import FakeClient, reply, use_model
 
 
 @pytest.fixture
@@ -270,7 +270,7 @@ class TestMain:
 
 class TestApiKey:
     def test_cli_loads_dotenv(self, agents_dir, monkeypatch, no_dotenv):
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("ok")]))
+        use_model(monkeypatch, FakeClient([reply("ok")]))
         cli.main(["hi"])
         assert len(no_dotenv) == 1  # the CLI (the interface) loads .env, once
 
@@ -292,7 +292,7 @@ class TestRunOutput:
             "---\nmodel: m\ntemperature: 0.1\nmax_steps: 3\ntools:\n  - write_file\n---\nPrompt.\n"
         )
         replies = [reply(tool_calls=[call("write_file", {"path": "a.txt", "content": "x"})]), reply("done")]
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient(replies))
+        use_model(monkeypatch, FakeClient(replies))
         cli.main(["write", "it"])
         captured = capsys.readouterr()
         assert '[step 1] write_file({"path": "a.txt", "content": "x"})' in captured.err
@@ -301,7 +301,7 @@ class TestRunOutput:
         assert captured.out == "done\n"
 
     def test_answer_stdout_rest_stderr(self, agents_dir, sessions_dir, monkeypatch, capsys):
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("the answer")]))
+        use_model(monkeypatch, FakeClient([reply("the answer")]))
         cli.main(["say", "hi"])
         captured = capsys.readouterr()
         assert captured.out.strip() == "the answer"
@@ -310,7 +310,7 @@ class TestRunOutput:
         assert "(1 model call · 0 tool calls ·" in captured.err
 
     def test_session_printed_even_after_a_crash(self, agents_dir, sessions_dir, monkeypatch, capsys):
-        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # the first model call fails
+        use_model(monkeypatch, FakeClient([]))  # the first model call fails
         with pytest.raises(AssertionError):
             cli.main(["say", "hi"])
         assert "session:" in capsys.readouterr().err
@@ -339,7 +339,7 @@ class TestProjectTools:
     def weather_then_answer(self, monkeypatch):
         from tests.fakes import call
         client = FakeClient([reply(tool_calls=[call("weather", {"city": "Paris"})]), reply("It's sunny.")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client)
+        use_model(monkeypatch, client)
         return client
 
     def test_run_uses_the_projects_tool(self, project, monkeypatch, capsys):
@@ -364,7 +364,7 @@ class TestProjectTools:
         monkeypatch.chdir(project.parent)  # resume from somewhere else: the session knows its project
         from tests.fakes import call
         client2 = FakeClient([reply(tool_calls=[call("weather", {"city": "Rome"})]), reply("ok")])
-        monkeypatch.setattr(orchestrator, "make_client", lambda: client2)
+        use_model(monkeypatch, client2)
         typed("and Rome?")
         cli.main(["chat", "--resume", session_id])
         assert client2.requests[1]["messages"][-1]["content"] == "sunny in Rome"

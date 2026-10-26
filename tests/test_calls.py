@@ -2,7 +2,8 @@
 
 import pytest
 
-from orchestra import calls, chat
+from orchestra.providers import omlx
+from orchestra import chat
 from orchestra.providers import MissingAPIKey
 from tests.fakes import FakeClient, call, reply
 from tests.test_records import read_log
@@ -13,8 +14,9 @@ USAGE = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25,
 
 
 def ask(client, **options):
-    return chat(app=options.pop("app", "jewels"), model="m", messages=options.pop("messages", MESSAGES),
-                client=client, **options)
+    """chat() against `client`, a scripted FakeClient, as the shared model client."""
+    omlx.client = lambda: client  # the autouse no_model_client fixture puts the real one back afterwards
+    return chat(app=options.pop("app", "jewels"), model="m", messages=options.pop("messages", MESSAGES), **options)
 
 
 class TestReply:
@@ -68,10 +70,12 @@ class TestRequest:
             ask(client, app="../x")
         assert client.requests == []
 
-    def test_default_client_comes_from_the_environment(self, monkeypatch):
+    def test_the_client_comes_from_the_environment(self, monkeypatch):
+        # nothing scripted: oMLX's client is made from OMLX_* on first use
         client = FakeClient([reply("hi")])
-        monkeypatch.setattr(calls, "make_client", lambda: client)
+        monkeypatch.setattr(omlx, "make_client", lambda: client)
         assert chat(app="jewels", model="m", messages=MESSAGES).content == "hi"
+        assert omlx.client() is client  # made once, then reused
 
 
 class TestRecord:
